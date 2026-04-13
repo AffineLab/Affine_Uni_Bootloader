@@ -1,0 +1,30 @@
+# Build directories
+/build-*/
+/cmake-build-*/
+
+# CMake/Ninja generated files
+/CMakeCache.txt
+/CMakeFiles/
+/build.ninja
+/cmake_install.cmake
+/compile_commands.json
+/.ninja_deps
+/.ninja_log
+
+# Tool/cache output
+__pycache__/
+*.pyc
+
+# Firmware and object artifacts
+*.a
+*.bin
+*.elf
+*.hex
+*.map
+*.o
+*.obj
+
+# Documentation
+/docs/
+/README.md
+**/README.md
