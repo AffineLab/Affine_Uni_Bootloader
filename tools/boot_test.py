@@ -33,7 +33,7 @@ BOOT_OP_RESPONSE = 0x8000
 
 BOOT_FRAME_MAX_PAYLOAD = 512
 BOOT_DATA_PREFIX_SIZE = 8
-BOOT_WRITE_ALIGN = 8
+BOOT_DEFAULT_WRITE_ALIGN = 8
 
 APP_CMD_JUMP_TO_BOOTLOADER = 0x25
 
@@ -322,15 +322,39 @@ def send_frame_and_read(
 def send_simple_app_jump(port: serial.Serial, retries: int, retry_interval: float) -> None:
     frame = build_app_command(APP_CMD_JUMP_TO_BOOTLOADER)
     ack = bytes([0xFF, APP_CMD_JUMP_TO_BOOTLOADER, 0x01, 0x01, 0x26])
+    disconnect_markers = (
+        "device does not recognize the command",
+        "device attached to the system is not functioning",
+        "clearcommerror failed",
+    )
 
     for attempt in range(1, retries + 1):
         port.reset_input_buffer()
         print(f"app-jump Tx[{attempt}/{retries}]: {format_hex(frame)}")
         port.write(frame)
         port.flush()
-        reply = port.read(len(ack))
-        if reply == ack:
-            print(f"app-jump Rx[{attempt}/{retries}]: {format_hex(reply)}")
+        deadline = time.monotonic() + max(float(port.timeout or 0.0), 0.5)
+        reply = bytearray()
+        while time.monotonic() < deadline:
+            try:
+                chunk = port.read(32)
+            except serial.SerialException as exc:
+                message = str(exc).lower()
+                if any(marker in message for marker in disconnect_markers):
+                    print(
+                        f"app-jump Rx[{attempt}/{retries}]: device disconnected during jump, assuming success"
+                    )
+                    return
+                raise
+            if chunk:
+                reply.extend(chunk)
+                if ack in reply:
+                    print(f"app-jump Rx[{attempt}/{retries}]: {format_hex(ack)}")
+                    return
+                continue
+            time.sleep(0.01)
+        if ack in reply:
+            print(f"app-jump Rx[{attempt}/{retries}]: {format_hex(ack)}")
             return
         if attempt < retries:
             time.sleep(retry_interval)
@@ -376,18 +400,27 @@ def reconnect_after_exception(
     return reopened
 
 
-def load_image_bytes(path: pathlib.Path, pad_byte: int) -> tuple[bytes, int]:
+def target_default_write_align(target_id: int) -> int:
+    if target_id == 0x48353033:
+        return 16
+    return BOOT_DEFAULT_WRITE_ALIGN
+
+
+def load_image_bytes(path: pathlib.Path, pad_byte: int, write_align: int) -> tuple[bytes, int]:
     if path.suffix.lower() != ".bin":
         raise ValueError("only .bin images are supported right now")
+
+    if write_align <= 0:
+        raise ValueError("write alignment must be positive")
 
     image = path.read_bytes()
     if not image:
         raise ValueError("image file is empty")
 
     original_size = len(image)
-    remainder = len(image) % BOOT_WRITE_ALIGN
+    remainder = len(image) % write_align
     if remainder != 0:
-        image += bytes([pad_byte & 0xFF]) * (BOOT_WRITE_ALIGN - remainder)
+        image += bytes([pad_byte & 0xFF]) * (write_align - remainder)
 
     return image, original_size
 
@@ -402,11 +435,11 @@ def flash_image(
     open_retries: int,
     run_after: bool,
     pad_byte: int,
+    write_align: int,
     begin_timeout: float,
     commit_timeout: float,
 ) -> int:
     sequence = 1
-    image, original_size = load_image_bytes(image_path, pad_byte)
 
     _, hello_payload = send_frame_and_read(
         port,
@@ -419,6 +452,9 @@ def flash_image(
     )
     protocol_version, target_id, _, app_base, slot_size, max_chunk_size, _ = parse_hello_fields(hello_payload)
     sequence += 1
+    if write_align == 0:
+        write_align = target_default_write_align(target_id)
+    image, original_size = load_image_bytes(image_path, pad_byte, write_align)
 
     if protocol_version != BOOT_PROTOCOL_VERSION:
         raise RuntimeError(
@@ -431,14 +467,15 @@ def flash_image(
         )
 
     usable_chunk = min(max_chunk_size, BOOT_FRAME_MAX_PAYLOAD - BOOT_DATA_PREFIX_SIZE)
-    usable_chunk -= usable_chunk % BOOT_WRITE_ALIGN
+    usable_chunk -= usable_chunk % write_align
     if usable_chunk == 0:
         raise RuntimeError("device reported unusable max_chunk_size")
 
     image_crc = crc32(image)
     print(
         f"image={image_path.name}, original_size={original_size}, padded_size={len(image)}, "
-        f"crc32=0x{image_crc:08X}, app_base=0x{app_base:08X}, chunk={usable_chunk}"
+        f"crc32=0x{image_crc:08X}, app_base=0x{app_base:08X}, "
+        f"write_align={write_align}, chunk={usable_chunk}"
     )
 
     begin_payload = struct.pack("<5I", target_id, len(image), image_crc, version, flags)
@@ -611,7 +648,8 @@ def main() -> int:
     parser.add_argument("--open-retries", type=int, default=10, help="serial open retry count")
     parser.add_argument("--version", type=lambda value: int(value, 0), default=1, help="firmware version for BEGIN")
     parser.add_argument("--flags", type=lambda value: int(value, 0), default=0, help="security flags for BEGIN")
-    parser.add_argument("--pad-byte", type=lambda value: int(value, 0), default=0xFF, help="padding byte for 8-byte flash alignment")
+    parser.add_argument("--pad-byte", type=lambda value: int(value, 0), default=0xFF, help="padding byte for flash alignment")
+    parser.add_argument("--write-align", type=lambda value: int(value, 0), default=0, help="override flash write alignment; 0 auto-detects known targets")
     parser.add_argument("--begin-timeout", type=float, default=6.0, help="response timeout for BEGIN in seconds")
     parser.add_argument("--commit-timeout", type=float, default=3.0, help="response timeout for COMMIT in seconds")
     parser.add_argument("--run", action="store_true", help="boot the application after COMMIT")
@@ -639,10 +677,11 @@ def main() -> int:
     if args.dry_run:
         if args.command == "flash":
             image_path = pathlib.Path(args.image)
-            image, original_size = load_image_bytes(image_path, args.pad_byte)
+            write_align = args.write_align or BOOT_DEFAULT_WRITE_ALIGN
+            image, original_size = load_image_bytes(image_path, args.pad_byte, write_align)
             print(
                 f"flash image={image_path}, original_size={original_size}, "
-                f"padded_size={len(image)}, crc32=0x{crc32(image):08X}"
+                f"padded_size={len(image)}, write_align={write_align}, crc32=0x{crc32(image):08X}"
             )
             return 0
         if args.command == "app-jump":
@@ -700,6 +739,7 @@ def main() -> int:
                     args.open_retries,
                     args.run,
                     args.pad_byte,
+                    args.write_align,
                     args.begin_timeout,
                     args.commit_timeout,
                 )

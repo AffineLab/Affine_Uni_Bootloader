@@ -1,5 +1,7 @@
 #include "boot_image.h"
 
+#include "boot_protocol.h"
+
 static bool boot_address_in_sram(const boot_target_config_t *cfg, uint32_t addr)
 {
     return (addr >= cfg->sram_base) && (addr <= (cfg->sram_base + cfg->sram_size));
@@ -32,6 +34,8 @@ bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_ba
 
 bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata)
 {
+    const uint32_t slot_size = cfg->metadata_base - cfg->app_base;
+
     if (metadata->magic != BOOT_METADATA_MAGIC)
     {
         return false;
@@ -52,10 +56,31 @@ bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata
         return false;
     }
 
-    if ((cfg->app_base + metadata->image_size) > cfg->metadata_base)
+    if (metadata->image_size > slot_size)
     {
         return false;
     }
 
     return true;
+}
+
+bool boot_image_crc_is_valid(const boot_metadata_t *metadata)
+{
+    const uint8_t *image = (const uint8_t *)metadata->app_base;
+    return boot_crc32_update(0U, image, metadata->image_size) == metadata->image_crc32;
+}
+
+bool boot_image_is_committed_and_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata)
+{
+    if (!boot_metadata_is_valid(cfg, metadata))
+    {
+        return false;
+    }
+
+    if (!boot_image_vector_is_valid(cfg, metadata->app_base))
+    {
+        return false;
+    }
+
+    return boot_image_crc_is_valid(metadata);
 }

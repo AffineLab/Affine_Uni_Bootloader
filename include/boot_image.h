@@ -29,6 +29,7 @@ typedef struct
     uint32_t expected_crc32;
     uint32_t written_size;
     uint32_t running_crc32;
+    uint32_t flags;
 } boot_session_t;
 
 typedef struct
@@ -49,5 +50,7 @@ typedef struct
 
 bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_base);
 bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata);
+bool boot_image_crc_is_valid(const boot_metadata_t *metadata);
+bool boot_image_is_committed_and_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata);
 
 #endif

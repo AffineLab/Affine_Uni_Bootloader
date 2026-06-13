@@ -1,0 +1,303 @@
+#include "boot_platform.h"
+
+#include <string.h>
+
+#include "stm32h5xx.h"
+#include "stm32h5xx_hal.h"
+#include "stm32h5xx_hal_flash.h"
+#include "stm32h5xx_hal_flash_ex.h"
+#include "usbd_cdc_acm_if.h"
+
+#include "targets/stm32h503/board_config.h"
+
+#define H503_BOOT_REQUEST_SIGNATURE   0x424F4F54UL
+#define H503_BOOT_REQUEST_ADDRESS     (0x20000000UL + 0x7F00UL)
+#define BOOT_USB_TX_QUEUE_DEPTH       8U
+#define H503_FLASH_BANK_SIZE          (64UL * 1024UL)
+
+typedef struct
+{
+    uint16_t length;
+    uint8_t data[sizeof(boot_frame_header_t) + BOOT_FRAME_MAX_PAYLOAD];
+} boot_usb_tx_packet_t;
+
+static boot_usb_tx_packet_t g_tx_queue[BOOT_USB_TX_QUEUE_DEPTH];
+static uint8_t g_tx_head;
+static uint8_t g_tx_tail;
+static uint8_t g_tx_count;
+static bool g_tx_in_flight;
+static boot_diag_response_t g_diag;
+
+static bool h503_flash_range_is_valid(uint32_t address, uint32_t length)
+{
+    const uint32_t flash_end = g_target_config.flash_base + g_target_config.flash_size;
+
+    if (length == 0U)
+    {
+        return true;
+    }
+
+    if (address < g_target_config.flash_base)
+    {
+        return false;
+    }
+
+    if (address >= flash_end)
+    {
+        return false;
+    }
+
+    if (length > (flash_end - address))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static uint32_t h503_flash_bank(uint32_t address)
+{
+    const uint32_t offset = address - g_target_config.flash_base;
+    return (offset < H503_FLASH_BANK_SIZE) ? FLASH_BANK_1 : FLASH_BANK_2;
+}
+
+static uint32_t h503_flash_sector_in_bank(uint32_t address)
+{
+    const uint32_t offset = address - g_target_config.flash_base;
+    return (offset % H503_FLASH_BANK_SIZE) / g_target_config.erase_size;
+}
+
+static uint32_t h503_flash_bank_end(uint32_t address)
+{
+    const uint32_t offset = address - g_target_config.flash_base;
+    const uint32_t bank_base_offset = offset - (offset % H503_FLASH_BANK_SIZE);
+    return g_target_config.flash_base + bank_base_offset + H503_FLASH_BANK_SIZE;
+}
+
+const boot_target_config_t *boot_platform_target(void)
+{
+    return &g_target_config;
+}
+
+uint32_t boot_platform_millis(void)
+{
+    return HAL_GetTick();
+}
+
+bool boot_platform_force_bootloader(void)
+{
+    volatile uint32_t *request = (volatile uint32_t *)H503_BOOT_REQUEST_ADDRESS;
+
+    if (*request == H503_BOOT_REQUEST_SIGNATURE)
+    {
+        *request = 0U;
+        __DSB();
+        __ISB();
+        return true;
+    }
+
+    return false;
+}
+
+void boot_stm32h503_usb_diag_note_rx(uint32_t length)
+{
+    g_diag.rx_callback_count++;
+    g_diag.rx_byte_count += length;
+    g_diag.rx_last_len = length;
+    g_diag.last_rx_tick_ms = HAL_GetTick();
+}
+
+void boot_stm32h503_usb_diag_note_rx_overflow(void)
+{
+    g_diag.rx_fifo_overflow_count++;
+}
+
+void boot_stm32h503_usb_diag_note_tx_complete(uint32_t length)
+{
+    g_diag.tx_complete_count++;
+    g_diag.tx_last_len = length;
+    g_diag.last_tx_complete_tick_ms = HAL_GetTick();
+}
+
+void boot_platform_transport_send(const uint8_t *data, size_t length)
+{
+    boot_usb_tx_packet_t *packet;
+
+    if ((length > sizeof(g_tx_queue[0].data)) || (g_tx_count >= BOOT_USB_TX_QUEUE_DEPTH))
+    {
+        g_diag.tx_queue_drop_count++;
+        return;
+    }
+
+    packet = &g_tx_queue[g_tx_head];
+    packet->length = (uint16_t)length;
+    memcpy(packet->data, data, length);
+
+    g_tx_head = (uint8_t)((g_tx_head + 1U) % BOOT_USB_TX_QUEUE_DEPTH);
+    ++g_tx_count;
+    g_diag.tx_enqueue_count++;
+}
+
+void boot_platform_transport_poll(void)
+{
+    if (g_tx_in_flight)
+    {
+        if (CDC_IsBusy(0U) != 0U)
+        {
+            return;
+        }
+
+        g_tx_tail = (uint8_t)((g_tx_tail + 1U) % BOOT_USB_TX_QUEUE_DEPTH);
+        --g_tx_count;
+        g_tx_in_flight = false;
+    }
+
+    if ((g_tx_count == 0U) || (CDC_IsBusy(0U) != 0U))
+    {
+        return;
+    }
+
+    if (CDC_Transmit(0U, g_tx_queue[g_tx_tail].data, g_tx_queue[g_tx_tail].length) == USBD_OK)
+    {
+        g_tx_in_flight = true;
+        g_diag.tx_start_count++;
+        g_diag.tx_last_len = g_tx_queue[g_tx_tail].length;
+        g_diag.last_tx_start_tick_ms = HAL_GetTick();
+    }
+    else
+    {
+        g_diag.tx_busy_reject_count++;
+    }
+}
+
+bool boot_platform_transport_get_diag(boot_diag_response_t *out_diag)
+{
+    if (out_diag == NULL)
+    {
+        return false;
+    }
+
+    *out_diag = g_diag;
+    return true;
+}
+
+void boot_platform_flash_unlock(void)
+{
+    HAL_FLASH_Unlock();
+}
+
+void boot_platform_flash_lock(void)
+{
+    HAL_FLASH_Lock();
+}
+
+boot_error_t boot_platform_flash_erase(uint32_t address, uint32_t length)
+{
+    if (length == 0U)
+    {
+        return BOOT_ERR_NONE;
+    }
+
+    if (!h503_flash_range_is_valid(address, length))
+    {
+        return BOOT_ERR_RANGE;
+    }
+
+    while (length > 0U)
+    {
+        FLASH_EraseInitTypeDef erase = {0};
+        uint32_t sector_error = 0U;
+        const uint32_t bank_end = h503_flash_bank_end(address);
+        const uint32_t chunk_len = ((address + length) > bank_end) ? (bank_end - address) : length;
+        const uint32_t start_sector = h503_flash_sector_in_bank(address);
+        const uint32_t end_sector = h503_flash_sector_in_bank(address + chunk_len - 1U);
+
+        erase.TypeErase = FLASH_TYPEERASE_SECTORS;
+        erase.Banks = h503_flash_bank(address);
+        erase.Sector = start_sector;
+        erase.NbSectors = (end_sector - start_sector) + 1U;
+
+        if (HAL_FLASHEx_Erase(&erase, &sector_error) != HAL_OK)
+        {
+            return BOOT_ERR_FLASH;
+        }
+
+        address += chunk_len;
+        length -= chunk_len;
+    }
+
+    return BOOT_ERR_NONE;
+}
+
+boot_error_t boot_platform_flash_write(uint32_t address, const uint8_t *data, uint32_t length)
+{
+    uint32_t offset = 0U;
+
+    if ((length % g_target_config.write_size) != 0U)
+    {
+        return BOOT_ERR_ALIGNMENT;
+    }
+
+    if (!h503_flash_range_is_valid(address, length))
+    {
+        return BOOT_ERR_RANGE;
+    }
+
+    if (((address - g_target_config.flash_base) % g_target_config.write_size) != 0U)
+    {
+        return BOOT_ERR_ALIGNMENT;
+    }
+
+    while (offset < length)
+    {
+        uint32_t quadword[4];
+
+        memcpy(quadword, &data[offset], sizeof(quadword));
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, address + offset, (uint32_t)quadword) != HAL_OK)
+        {
+            return BOOT_ERR_FLASH;
+        }
+        offset += sizeof(quadword);
+    }
+
+    return BOOT_ERR_NONE;
+}
+
+void boot_platform_jump_to_app(uint32_t app_base)
+{
+    void (*app_reset_handler)(void);
+    uint32_t app_stack = *(volatile uint32_t *)app_base;
+    uint32_t app_reset = *(volatile uint32_t *)(app_base + 4U);
+
+    __disable_irq();
+
+    HAL_DeInit();
+    HAL_RCC_DeInit();
+
+    SysTick->CTRL = 0U;
+    SysTick->LOAD = 0U;
+    SysTick->VAL = 0U;
+
+    for (uint32_t i = 0U; i < (sizeof(NVIC->ICER) / sizeof(NVIC->ICER[0])); ++i)
+    {
+        NVIC->ICER[i] = 0xFFFFFFFFUL;
+        NVIC->ICPR[i] = 0xFFFFFFFFUL;
+    }
+
+    SCB->VTOR = app_base;
+    __DSB();
+    __ISB();
+
+    __set_MSP(app_stack);
+    app_reset_handler = (void (*)(void))app_reset;
+    app_reset_handler();
+
+    for (;;)
+    {
+    }
+}
+
+void boot_platform_reboot(void)
+{
+    NVIC_SystemReset();
+}

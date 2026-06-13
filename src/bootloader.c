@@ -42,18 +42,23 @@ static void bootloader_send_status(bootloader_t *ctx, uint16_t opcode, uint16_t 
     bootloader_send_response(opcode, sequence, &rsp, sizeof(rsp));
 }
 
-static boot_error_t bootloader_store_metadata(bootloader_t *ctx)
+static void bootloader_prepare_metadata(bootloader_t *ctx, boot_metadata_t *metadata)
 {
     const boot_target_config_t *cfg = boot_platform_target();
-    boot_metadata_t metadata;
 
-    memset(&metadata, 0, sizeof(metadata));
-    metadata.magic = BOOT_METADATA_MAGIC;
-    metadata.target_id = cfg->target_id;
-    metadata.version = ctx->session.version;
-    metadata.image_size = ctx->session.expected_size;
-    metadata.image_crc32 = ctx->session.expected_crc32;
-    metadata.app_base = cfg->app_base;
+    memset(metadata, 0, sizeof(*metadata));
+    metadata->magic = BOOT_METADATA_MAGIC;
+    metadata->target_id = cfg->target_id;
+    metadata->version = ctx->session.version;
+    metadata->image_size = ctx->session.expected_size;
+    metadata->image_crc32 = ctx->session.expected_crc32;
+    metadata->app_base = cfg->app_base;
+    metadata->flags = ctx->session.flags;
+}
+
+static boot_error_t bootloader_store_metadata(const boot_metadata_t *metadata)
+{
+    const boot_target_config_t *cfg = boot_platform_target();
 
     boot_platform_flash_unlock();
 
@@ -63,14 +68,13 @@ static boot_error_t bootloader_store_metadata(bootloader_t *ctx)
         return BOOT_ERR_FLASH;
     }
 
-    if (boot_platform_flash_write(cfg->metadata_base, (const uint8_t *)&metadata, sizeof(metadata)) != BOOT_ERR_NONE)
+    if (boot_platform_flash_write(cfg->metadata_base, (const uint8_t *)metadata, sizeof(*metadata)) != BOOT_ERR_NONE)
     {
         boot_platform_flash_lock();
         return BOOT_ERR_FLASH;
     }
 
     boot_platform_flash_lock();
-    ctx->metadata_shadow = metadata;
     return BOOT_ERR_NONE;
 }
 
@@ -128,6 +132,7 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
     ctx->session.expected_size = req->image_size;
     ctx->session.expected_crc32 = req->image_crc32;
     ctx->session.running_crc32 = 0U;
+    ctx->session.flags = req->flags;
     ctx->status = BOOT_STATUS_RECEIVING;
     ctx->last_error = BOOT_ERR_NONE;
     memset(&ctx->metadata_shadow, 0, sizeof(ctx->metadata_shadow));
@@ -170,6 +175,21 @@ static boot_error_t bootloader_write_data(bootloader_t *ctx, const uint8_t *payl
         return BOOT_ERR_RANGE;
     }
 
+    if (prefix->data_len == 0U)
+    {
+        return BOOT_ERR_RANGE;
+    }
+
+    if (ctx->session.written_size > ctx->session.expected_size)
+    {
+        return BOOT_ERR_RANGE;
+    }
+
+    if (prefix->data_len > (ctx->session.expected_size - ctx->session.written_size))
+    {
+        return BOOT_ERR_RANGE;
+    }
+
     if ((prefix->data_len % cfg->write_size) != 0U)
     {
         return BOOT_ERR_ALIGNMENT;
@@ -198,6 +218,8 @@ static boot_error_t bootloader_write_data(bootloader_t *ctx, const uint8_t *payl
 
 static boot_error_t bootloader_commit_session(bootloader_t *ctx, const boot_commit_request_t *req)
 {
+    boot_metadata_t metadata;
+
     if (ctx->session.state != BOOT_SESSION_STATE_OPEN)
     {
         return BOOT_ERR_BAD_STATE;
@@ -223,16 +245,19 @@ static boot_error_t bootloader_commit_session(bootloader_t *ctx, const boot_comm
         return BOOT_ERR_IMAGE_CRC;
     }
 
-    if (bootloader_store_metadata(ctx) != BOOT_ERR_NONE)
-    {
-        return BOOT_ERR_FLASH;
-    }
+    bootloader_prepare_metadata(ctx, &metadata);
 
-    if (boot_security_verify_image(boot_platform_target(), &ctx->metadata_shadow) != BOOT_ERR_NONE)
+    if (boot_security_verify_image(boot_platform_target(), &metadata) != BOOT_ERR_NONE)
     {
         return BOOT_ERR_IMAGE_CRC;
     }
 
+    if (bootloader_store_metadata(&metadata) != BOOT_ERR_NONE)
+    {
+        return BOOT_ERR_FLASH;
+    }
+
+    ctx->metadata_shadow = metadata;
     ctx->session.state = BOOT_SESSION_STATE_DONE;
     ctx->status = BOOT_STATUS_COMMITTED;
     return BOOT_ERR_NONE;
@@ -317,14 +342,20 @@ static void bootloader_handle_frame(bootloader_t *ctx, const boot_decoded_frame_
         }
 
         case BOOT_OP_BOOT_APP:
-            if (boot_image_vector_is_valid(boot_platform_target(), boot_platform_target()->app_base))
+        {
+            const boot_target_config_t *cfg = boot_platform_target();
+            const boot_metadata_t *metadata = (const boot_metadata_t *)cfg->metadata_base;
+
+            if (boot_image_is_committed_and_valid(cfg, metadata))
             {
+                ctx->metadata_shadow = *metadata;
                 bootloader_send_status(ctx, frame->header.opcode, frame->header.sequence);
-                boot_platform_jump_to_app(boot_platform_target()->app_base);
+                boot_platform_jump_to_app(cfg->app_base);
                 return;
             }
             err = BOOT_ERR_NO_VALID_APP;
             break;
+        }
 
         default:
             err = BOOT_ERR_UNSUPPORTED_OPCODE;
@@ -397,17 +428,27 @@ void bootloader_try_boot_app(bootloader_t *ctx)
         return;
     }
 
-    if (!boot_image_vector_is_valid(cfg, cfg->app_base))
+    if (!boot_metadata_is_valid(cfg, metadata))
     {
         ctx->last_error = BOOT_ERR_NO_VALID_APP;
         ctx->status = BOOT_STATUS_ERROR;
         return;
     }
 
-    if (boot_metadata_is_valid(cfg, metadata))
+    if (!boot_image_vector_is_valid(cfg, metadata->app_base))
     {
-        ctx->metadata_shadow = *metadata;
+        ctx->last_error = BOOT_ERR_NO_VALID_APP;
+        ctx->status = BOOT_STATUS_ERROR;
+        return;
     }
 
+    if (!boot_image_crc_is_valid(metadata))
+    {
+        ctx->last_error = BOOT_ERR_IMAGE_CRC;
+        ctx->status = BOOT_STATUS_ERROR;
+        return;
+    }
+
+    ctx->metadata_shadow = *metadata;
     boot_platform_jump_to_app(cfg->app_base);
 }
