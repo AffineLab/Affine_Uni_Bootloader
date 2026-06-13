@@ -24,7 +24,7 @@ __pycache__/
 *.o
 *.obj
 
-# Documentation
+# Local documentation drafts
 /docs/
-/README.md
 **/README.md
+!/README.md
