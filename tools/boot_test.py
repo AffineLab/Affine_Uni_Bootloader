@@ -12,6 +12,7 @@ import zlib
 
 try:
     import serial
+    from serial.tools import list_ports
 except ModuleNotFoundError as exc:  # pragma: no cover - operator guidance
     raise SystemExit(
         "pyserial is required. Install it with: py -m pip install pyserial"
@@ -36,6 +37,9 @@ BOOT_DATA_PREFIX_SIZE = 8
 BOOT_DEFAULT_WRITE_ALIGN = 8
 
 APP_CMD_JUMP_TO_BOOTLOADER = 0x25
+DEFAULT_USB_VID = 0xAFF1
+DEFAULT_G431_BOOTLOADER_PID = 0x52B0
+DEFAULT_APP_PID = 0x52A6
 
 BOOT_STATUS_NAMES = {
     0: "IDLE",
@@ -139,6 +143,80 @@ def open_serial_port(
             break
 
     raise RuntimeError(f"failed to open {port_name}: {last_error}") from last_error
+
+
+def parse_int_auto(value: str) -> int:
+    return int(value, 0)
+
+
+def describe_port(port_info: object) -> str:
+    vid = getattr(port_info, "vid", None)
+    pid = getattr(port_info, "pid", None)
+    serial_number = getattr(port_info, "serial_number", None)
+    identity = []
+
+    if vid is not None and pid is not None:
+        identity.append(f"VID:PID={vid:04X}:{pid:04X}")
+    if serial_number:
+        identity.append(f"SER={serial_number}")
+
+    suffix = f" ({', '.join(identity)})" if identity else ""
+    return f"{port_info.device}{suffix}"
+
+
+def find_port_info(port_name: str) -> object | None:
+    normalized = port_name.lower()
+    for port_info in list_ports.comports():
+        if port_info.device.lower() == normalized:
+            return port_info
+    return None
+
+
+def port_matches(port_info: object, vid: int | None, pid: int | None, serial_number: str | None) -> bool:
+    if vid is not None and getattr(port_info, "vid", None) != vid:
+        return False
+    if pid is not None and getattr(port_info, "pid", None) != pid:
+        return False
+    if serial_number:
+        port_serial = getattr(port_info, "serial_number", None)
+        if port_serial is None or port_serial.lower() != serial_number.lower():
+            return False
+    return True
+
+
+def wait_for_usb_port(
+    vid: int | None,
+    pid: int | None,
+    serial_number: str | None,
+    timeout: float,
+    label: str,
+) -> object:
+    deadline = time.monotonic() + timeout
+    last_seen = "none"
+
+    while time.monotonic() < deadline:
+        ports = list(list_ports.comports())
+        matches = [port_info for port_info in ports if port_matches(port_info, vid, pid, serial_number)]
+        if matches:
+            port_info = matches[0]
+            print(f"{label} port: {describe_port(port_info)}")
+            return port_info
+        if ports:
+            last_seen = ", ".join(describe_port(port_info) for port_info in ports)
+        time.sleep(0.1)
+
+    raise RuntimeError(f"timed out waiting for {label} USB port, last seen: {last_seen}")
+
+
+def resolve_wait_serial(port_name: str, explicit_serial: str | None) -> str | None:
+    if explicit_serial:
+        return explicit_serial
+
+    port_info = find_port_info(port_name)
+    if port_info is None:
+        return None
+
+    return getattr(port_info, "serial_number", None)
 
 
 def parse_hello_fields(payload: bytes) -> tuple[int, int, int, int, int, int, int]:
@@ -568,7 +646,7 @@ def flash_image(
             )
             print(decode_status(boot_rsp))
         except (TimeoutError, serial.SerialException, OSError) as exc:
-            print(f"BOOT_APP disconnected after jump: {exc}", file=sys.stderr)
+            print(f"BOOT_APP jump requested; device disconnected/re-enumerating: {exc}", file=sys.stderr)
 
     return 0
 
@@ -655,6 +733,24 @@ def main() -> int:
     parser.add_argument("--run", action="store_true", help="boot the application after COMMIT")
     parser.add_argument("--app-jump", action="store_true", help="send Mai app command 0x25 to reboot into bootloader before flashing")
     parser.add_argument("--reconnect-delay", type=float, default=1.2, help="delay after app-jump reset before reopening the bootloader port")
+    parser.add_argument("--wait-timeout", type=float, default=8.0, help="USB re-enumeration wait timeout in seconds")
+    parser.add_argument("--usb-serial", help="USB serial number to match while waiting for re-enumeration")
+    parser.add_argument("--usb-vid", type=parse_int_auto, default=DEFAULT_USB_VID, help="USB VID used for wait matching")
+    parser.add_argument(
+        "--bootloader-pid",
+        type=parse_int_auto,
+        default=DEFAULT_G431_BOOTLOADER_PID,
+        help="bootloader USB PID used for wait matching",
+    )
+    parser.add_argument("--app-pid", type=parse_int_auto, default=DEFAULT_APP_PID, help="application USB PID used for wait matching")
+    parser.add_argument(
+        "--no-wait-bootloader",
+        dest="wait_bootloader",
+        action="store_false",
+        default=True,
+        help="do not wait for the bootloader COM port after app-jump",
+    )
+    parser.add_argument("--wait-app", action="store_true", help="wait for the application COM port after --run")
     parser.add_argument("--dry-run", action="store_true", help="build and print frames without opening the port")
     args = parser.parse_args()
 
@@ -701,6 +797,8 @@ def main() -> int:
                 return result
         return 0
 
+    device_serial = resolve_wait_serial(args.port, args.usb_serial)
+
     if args.command == "flash" and args.app_jump:
         with open_serial_port(
             args.port,
@@ -711,7 +809,17 @@ def main() -> int:
         ) as port:
             time.sleep(0.2)
             send_simple_app_jump(port, args.retries, args.retry_interval)
-        time.sleep(args.reconnect_delay)
+        if args.wait_bootloader:
+            bootloader_port = wait_for_usb_port(
+                args.usb_vid,
+                args.bootloader_pid,
+                device_serial,
+                args.wait_timeout,
+                "bootloader",
+            )
+            args.port = bootloader_port.device
+        else:
+            time.sleep(args.reconnect_delay)
 
     with open_serial_port(
         args.port,
@@ -725,11 +833,20 @@ def main() -> int:
 
         if args.command == "app-jump":
             send_simple_app_jump(port, args.retries, args.retry_interval)
+            if args.wait_bootloader:
+                port.close()
+                wait_for_usb_port(
+                    args.usb_vid,
+                    args.bootloader_pid,
+                    device_serial,
+                    args.wait_timeout,
+                    "bootloader",
+                )
             return 0
 
         if args.command == "flash":
             try:
-                return flash_image(
+                result = flash_image(
                     port,
                     pathlib.Path(args.image),
                     args.version,
@@ -743,6 +860,16 @@ def main() -> int:
                     args.begin_timeout,
                     args.commit_timeout,
                 )
+                if result == 0 and args.run and args.wait_app:
+                    port.close()
+                    wait_for_usb_port(
+                        args.usb_vid,
+                        args.app_pid,
+                        device_serial,
+                        args.wait_timeout,
+                        "application",
+                    )
+                return result
             except Exception as exc:
                 best_effort_abort(port, 0x7FFF, args.retries, args.retry_interval)
                 print(f"flash failed: {exc}", file=sys.stderr)

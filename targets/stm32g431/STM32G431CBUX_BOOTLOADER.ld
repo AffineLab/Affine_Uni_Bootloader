@@ -7,7 +7,7 @@ _Min_Stack_Size = 0x600;
 
 MEMORY
 {
-  RAM   (xrw) : ORIGIN = 0x20000000, LENGTH = 32K
+  RAM   (xrw) : ORIGIN = 0x20000000, LENGTH = 0x7F00
   FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 16K
 }
 

@@ -54,24 +54,36 @@ static void bootloader_prepare_metadata(bootloader_t *ctx, boot_metadata_t *meta
     metadata->image_crc32 = ctx->session.expected_crc32;
     metadata->app_base = cfg->app_base;
     metadata->flags = ctx->session.flags;
+    boot_metadata_update_crc(metadata);
 }
 
 static boot_error_t bootloader_store_metadata(const boot_metadata_t *metadata)
 {
     const boot_target_config_t *cfg = boot_platform_target();
+    const uint32_t copy_count = boot_metadata_copy_count(cfg);
+
+    if (copy_count == 0U)
+    {
+        return BOOT_ERR_RANGE;
+    }
 
     boot_platform_flash_unlock();
 
-    if (boot_platform_flash_erase(cfg->metadata_base, cfg->metadata_size) != BOOT_ERR_NONE)
+    for (uint32_t copy = 0U; copy < copy_count; ++copy)
     {
-        boot_platform_flash_lock();
-        return BOOT_ERR_FLASH;
-    }
+        const uint32_t address = boot_metadata_copy_address(cfg, copy);
 
-    if (boot_platform_flash_write(cfg->metadata_base, (const uint8_t *)metadata, sizeof(*metadata)) != BOOT_ERR_NONE)
-    {
-        boot_platform_flash_lock();
-        return BOOT_ERR_FLASH;
+        if (boot_platform_flash_erase(address, cfg->erase_size) != BOOT_ERR_NONE)
+        {
+            boot_platform_flash_lock();
+            return BOOT_ERR_FLASH;
+        }
+
+        if (boot_platform_flash_write(address, (const uint8_t *)metadata, sizeof(*metadata)) != BOOT_ERR_NONE)
+        {
+            boot_platform_flash_lock();
+            return BOOT_ERR_FLASH;
+        }
     }
 
     boot_platform_flash_lock();
@@ -112,7 +124,7 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
 
     boot_platform_flash_unlock();
 
-    if (boot_platform_flash_erase(cfg->app_base, slot_size) != BOOT_ERR_NONE)
+    if (boot_platform_flash_erase(cfg->app_base, req->image_size) != BOOT_ERR_NONE)
     {
         boot_platform_flash_lock();
         return BOOT_ERR_FLASH;
@@ -247,6 +259,11 @@ static boot_error_t bootloader_commit_session(bootloader_t *ctx, const boot_comm
 
     bootloader_prepare_metadata(ctx, &metadata);
 
+    if (!boot_image_crc_is_valid(&metadata))
+    {
+        return BOOT_ERR_IMAGE_CRC;
+    }
+
     if (boot_security_verify_image(boot_platform_target(), &metadata) != BOOT_ERR_NONE)
     {
         return BOOT_ERR_IMAGE_CRC;
@@ -343,14 +360,14 @@ static void bootloader_handle_frame(bootloader_t *ctx, const boot_decoded_frame_
 
         case BOOT_OP_BOOT_APP:
         {
-            const boot_target_config_t *cfg = boot_platform_target();
-            const boot_metadata_t *metadata = (const boot_metadata_t *)cfg->metadata_base;
+            boot_metadata_t metadata;
 
-            if (boot_image_is_committed_and_valid(cfg, metadata))
+            if (boot_metadata_select_valid(boot_platform_target(), &metadata) &&
+                boot_image_is_committed_and_valid(boot_platform_target(), &metadata))
             {
-                ctx->metadata_shadow = *metadata;
+                ctx->metadata_shadow = metadata;
                 bootloader_send_status(ctx, frame->header.opcode, frame->header.sequence);
-                boot_platform_jump_to_app(cfg->app_base);
+                boot_platform_jump_to_app(metadata.app_base);
                 return;
             }
             err = BOOT_ERR_NO_VALID_APP;
@@ -420,35 +437,27 @@ void bootloader_receive_bytes(bootloader_t *ctx, const uint8_t *data, size_t len
 
 void bootloader_try_boot_app(bootloader_t *ctx)
 {
-    const boot_target_config_t *cfg = boot_platform_target();
-    const boot_metadata_t *metadata = (const boot_metadata_t *)cfg->metadata_base;
+    boot_metadata_t metadata;
 
     if (boot_platform_force_bootloader())
     {
         return;
     }
 
-    if (!boot_metadata_is_valid(cfg, metadata))
+    if (!boot_metadata_select_valid(boot_platform_target(), &metadata))
     {
         ctx->last_error = BOOT_ERR_NO_VALID_APP;
         ctx->status = BOOT_STATUS_ERROR;
         return;
     }
 
-    if (!boot_image_vector_is_valid(cfg, metadata->app_base))
+    if (!boot_image_is_committed_and_valid(boot_platform_target(), &metadata))
     {
         ctx->last_error = BOOT_ERR_NO_VALID_APP;
         ctx->status = BOOT_STATUS_ERROR;
         return;
     }
 
-    if (!boot_image_crc_is_valid(metadata))
-    {
-        ctx->last_error = BOOT_ERR_IMAGE_CRC;
-        ctx->status = BOOT_STATUS_ERROR;
-        return;
-    }
-
-    ctx->metadata_shadow = *metadata;
-    boot_platform_jump_to_app(cfg->app_base);
+    ctx->metadata_shadow = metadata;
+    boot_platform_jump_to_app(metadata.app_base);
 }

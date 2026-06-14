@@ -8,52 +8,14 @@
 #include "stm32h5xx_hal_flash_ex.h"
 #include "usbd_cdc_acm_if.h"
 
+#include "targets/common/boot_target_common.h"
 #include "targets/stm32h503/board_config.h"
 
 #define H503_BOOT_REQUEST_SIGNATURE   0x424F4F54UL
 #define H503_BOOT_REQUEST_ADDRESS     (0x20000000UL + 0x7F00UL)
-#define BOOT_USB_TX_QUEUE_DEPTH       8U
 #define H503_FLASH_BANK_SIZE          (64UL * 1024UL)
 
-typedef struct
-{
-    uint16_t length;
-    uint8_t data[sizeof(boot_frame_header_t) + BOOT_FRAME_MAX_PAYLOAD];
-} boot_usb_tx_packet_t;
-
-static boot_usb_tx_packet_t g_tx_queue[BOOT_USB_TX_QUEUE_DEPTH];
-static uint8_t g_tx_head;
-static uint8_t g_tx_tail;
-static uint8_t g_tx_count;
-static bool g_tx_in_flight;
-static boot_diag_response_t g_diag;
-
-static bool h503_flash_range_is_valid(uint32_t address, uint32_t length)
-{
-    const uint32_t flash_end = g_target_config.flash_base + g_target_config.flash_size;
-
-    if (length == 0U)
-    {
-        return true;
-    }
-
-    if (address < g_target_config.flash_base)
-    {
-        return false;
-    }
-
-    if (address >= flash_end)
-    {
-        return false;
-    }
-
-    if (length > (flash_end - address))
-    {
-        return false;
-    }
-
-    return true;
-}
+static boot_target_usb_transport_t g_usb_transport;
 
 static uint32_t h503_flash_bank(uint32_t address)
 {
@@ -101,84 +63,32 @@ bool boot_platform_force_bootloader(void)
 
 void boot_stm32h503_usb_diag_note_rx(uint32_t length)
 {
-    g_diag.rx_callback_count++;
-    g_diag.rx_byte_count += length;
-    g_diag.rx_last_len = length;
-    g_diag.last_rx_tick_ms = HAL_GetTick();
+    boot_target_usb_transport_note_rx(&g_usb_transport, length, HAL_GetTick());
 }
 
 void boot_stm32h503_usb_diag_note_rx_overflow(void)
 {
-    g_diag.rx_fifo_overflow_count++;
+    boot_target_usb_transport_note_rx_overflow(&g_usb_transport);
 }
 
 void boot_stm32h503_usb_diag_note_tx_complete(uint32_t length)
 {
-    g_diag.tx_complete_count++;
-    g_diag.tx_last_len = length;
-    g_diag.last_tx_complete_tick_ms = HAL_GetTick();
+    boot_target_usb_transport_note_tx_complete(&g_usb_transport, length, HAL_GetTick());
 }
 
 void boot_platform_transport_send(const uint8_t *data, size_t length)
 {
-    boot_usb_tx_packet_t *packet;
-
-    if ((length > sizeof(g_tx_queue[0].data)) || (g_tx_count >= BOOT_USB_TX_QUEUE_DEPTH))
-    {
-        g_diag.tx_queue_drop_count++;
-        return;
-    }
-
-    packet = &g_tx_queue[g_tx_head];
-    packet->length = (uint16_t)length;
-    memcpy(packet->data, data, length);
-
-    g_tx_head = (uint8_t)((g_tx_head + 1U) % BOOT_USB_TX_QUEUE_DEPTH);
-    ++g_tx_count;
-    g_diag.tx_enqueue_count++;
+    boot_target_usb_transport_send(&g_usb_transport, data, length);
 }
 
 void boot_platform_transport_poll(void)
 {
-    if (g_tx_in_flight)
-    {
-        if (CDC_IsBusy(0U) != 0U)
-        {
-            return;
-        }
-
-        g_tx_tail = (uint8_t)((g_tx_tail + 1U) % BOOT_USB_TX_QUEUE_DEPTH);
-        --g_tx_count;
-        g_tx_in_flight = false;
-    }
-
-    if ((g_tx_count == 0U) || (CDC_IsBusy(0U) != 0U))
-    {
-        return;
-    }
-
-    if (CDC_Transmit(0U, g_tx_queue[g_tx_tail].data, g_tx_queue[g_tx_tail].length) == USBD_OK)
-    {
-        g_tx_in_flight = true;
-        g_diag.tx_start_count++;
-        g_diag.tx_last_len = g_tx_queue[g_tx_tail].length;
-        g_diag.last_tx_start_tick_ms = HAL_GetTick();
-    }
-    else
-    {
-        g_diag.tx_busy_reject_count++;
-    }
+    boot_target_usb_transport_poll(&g_usb_transport, CDC_IsBusy, CDC_Transmit, USBD_OK, HAL_GetTick());
 }
 
 bool boot_platform_transport_get_diag(boot_diag_response_t *out_diag)
 {
-    if (out_diag == NULL)
-    {
-        return false;
-    }
-
-    *out_diag = g_diag;
-    return true;
+    return boot_target_usb_transport_get_diag(&g_usb_transport, out_diag);
 }
 
 void boot_platform_flash_unlock(void)
@@ -198,7 +108,7 @@ boot_error_t boot_platform_flash_erase(uint32_t address, uint32_t length)
         return BOOT_ERR_NONE;
     }
 
-    if (!h503_flash_range_is_valid(address, length))
+    if (!boot_target_flash_range_is_valid(&g_target_config, address, length))
     {
         return BOOT_ERR_RANGE;
     }
@@ -233,17 +143,22 @@ boot_error_t boot_platform_flash_write(uint32_t address, const uint8_t *data, ui
 {
     uint32_t offset = 0U;
 
-    if ((length % g_target_config.write_size) != 0U)
+    if (length == 0U)
+    {
+        return BOOT_ERR_NONE;
+    }
+
+    if (!boot_target_flash_write_length_is_aligned(&g_target_config, length))
     {
         return BOOT_ERR_ALIGNMENT;
     }
 
-    if (!h503_flash_range_is_valid(address, length))
+    if (!boot_target_flash_range_is_valid(&g_target_config, address, length))
     {
         return BOOT_ERR_RANGE;
     }
 
-    if (((address - g_target_config.flash_base) % g_target_config.write_size) != 0U)
+    if (!boot_target_flash_write_address_is_aligned(&g_target_config, address))
     {
         return BOOT_ERR_ALIGNMENT;
     }

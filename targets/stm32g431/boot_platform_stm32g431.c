@@ -8,24 +8,61 @@
 #include "stm32g4xx_hal_flash_ex.h"
 #include "usbd_cdc_acm_if.h"
 
+#include "targets/common/boot_target_common.h"
 #include "targets/stm32g431/board_config.h"
 
 #define G431_BOOT_REQUEST_SIGNATURE   0x424F4F54UL
 #define G431_BOOT_REQUEST_ADDRESS     (0x20000000UL + 0x7F00UL)
-#define BOOT_USB_TX_QUEUE_DEPTH       8U
 
-typedef struct
+static boot_target_usb_transport_t g_usb_transport;
+
+static bool boot_g431_flash_uses_dual_bank(void)
 {
-    uint16_t length;
-    uint8_t data[sizeof(boot_frame_header_t) + BOOT_FRAME_MAX_PAYLOAD];
-} boot_usb_tx_packet_t;
+#if defined(FLASH_OPTR_DBANK)
+    return (READ_BIT(FLASH->OPTR, FLASH_OPTR_DBANK) != 0U);
+#else
+    return false;
+#endif
+}
 
-static boot_usb_tx_packet_t g_tx_queue[BOOT_USB_TX_QUEUE_DEPTH];
-static uint8_t g_tx_head;
-static uint8_t g_tx_tail;
-static uint8_t g_tx_count;
-static bool g_tx_in_flight;
-static boot_diag_response_t g_diag;
+static uint32_t boot_g431_flash_page_size(void)
+{
+#if defined(FLASH_OPTR_DBANK) && defined(FLASH_PAGE_SIZE_128_BITS)
+    if (!boot_g431_flash_uses_dual_bank())
+    {
+        return FLASH_PAGE_SIZE_128_BITS;
+    }
+#endif
+
+    return FLASH_PAGE_SIZE;
+}
+
+static uint32_t boot_g431_flash_bank_size(void)
+{
+    return boot_g431_flash_uses_dual_bank() ? (g_target_config.flash_size / 2U) : g_target_config.flash_size;
+}
+
+static uint32_t boot_g431_flash_bank_for_offset(uint32_t offset)
+{
+#if defined(FLASH_BANK_2)
+    return (boot_g431_flash_uses_dual_bank() && (offset >= boot_g431_flash_bank_size())) ? FLASH_BANK_2 : FLASH_BANK_1;
+#else
+    (void)offset;
+    return FLASH_BANK_1;
+#endif
+}
+
+static uint32_t boot_g431_flash_page_for_offset(uint32_t offset)
+{
+    const uint32_t bank_size = boot_g431_flash_bank_size();
+
+    if (boot_g431_flash_uses_dual_bank() && (offset >= bank_size))
+    {
+        offset -= bank_size;
+    }
+
+    return offset / boot_g431_flash_page_size();
+}
 
 const boot_target_config_t *boot_platform_target(void)
 {
@@ -54,84 +91,32 @@ bool boot_platform_force_bootloader(void)
 
 void boot_stm32g431_usb_diag_note_rx(uint32_t length)
 {
-    g_diag.rx_callback_count++;
-    g_diag.rx_byte_count += length;
-    g_diag.rx_last_len = length;
-    g_diag.last_rx_tick_ms = HAL_GetTick();
+    boot_target_usb_transport_note_rx(&g_usb_transport, length, HAL_GetTick());
 }
 
 void boot_stm32g431_usb_diag_note_rx_overflow(void)
 {
-    g_diag.rx_fifo_overflow_count++;
+    boot_target_usb_transport_note_rx_overflow(&g_usb_transport);
 }
 
 void boot_stm32g431_usb_diag_note_tx_complete(uint32_t length)
 {
-    g_diag.tx_complete_count++;
-    g_diag.tx_last_len = length;
-    g_diag.last_tx_complete_tick_ms = HAL_GetTick();
+    boot_target_usb_transport_note_tx_complete(&g_usb_transport, length, HAL_GetTick());
 }
 
 void boot_platform_transport_send(const uint8_t *data, size_t length)
 {
-    boot_usb_tx_packet_t *packet;
-
-    if ((length > sizeof(g_tx_queue[0].data)) || (g_tx_count >= BOOT_USB_TX_QUEUE_DEPTH))
-    {
-        g_diag.tx_queue_drop_count++;
-        return;
-    }
-
-    packet = &g_tx_queue[g_tx_head];
-    packet->length = (uint16_t)length;
-    memcpy(packet->data, data, length);
-
-    g_tx_head = (uint8_t)((g_tx_head + 1U) % BOOT_USB_TX_QUEUE_DEPTH);
-    ++g_tx_count;
-    g_diag.tx_enqueue_count++;
+    boot_target_usb_transport_send(&g_usb_transport, data, length);
 }
 
 void boot_platform_transport_poll(void)
 {
-    if (g_tx_in_flight)
-    {
-        if (CDC_IsBusy(0U) != 0U)
-        {
-            return;
-        }
-
-        g_tx_tail = (uint8_t)((g_tx_tail + 1U) % BOOT_USB_TX_QUEUE_DEPTH);
-        --g_tx_count;
-        g_tx_in_flight = false;
-    }
-
-    if ((g_tx_count == 0U) || (CDC_IsBusy(0U) != 0U))
-    {
-        return;
-    }
-
-    if (CDC_Transmit(0U, g_tx_queue[g_tx_tail].data, g_tx_queue[g_tx_tail].length) == USBD_OK)
-    {
-        g_tx_in_flight = true;
-        g_diag.tx_start_count++;
-        g_diag.tx_last_len = g_tx_queue[g_tx_tail].length;
-        g_diag.last_tx_start_tick_ms = HAL_GetTick();
-    }
-    else
-    {
-        g_diag.tx_busy_reject_count++;
-    }
+    boot_target_usb_transport_poll(&g_usb_transport, CDC_IsBusy, CDC_Transmit, USBD_OK, HAL_GetTick());
 }
 
 bool boot_platform_transport_get_diag(boot_diag_response_t *out_diag)
 {
-    if (out_diag == NULL)
-    {
-        return false;
-    }
-
-    *out_diag = g_diag;
-    return true;
+    return boot_target_usb_transport_get_diag(&g_usb_transport, out_diag);
 }
 
 void boot_platform_flash_unlock(void)
@@ -146,30 +131,44 @@ void boot_platform_flash_lock(void)
 
 boot_error_t boot_platform_flash_erase(uint32_t address, uint32_t length)
 {
-    FLASH_EraseInitTypeDef erase = {0};
-    uint32_t page_error = 0U;
-    uint32_t start_page;
-    uint32_t end_page;
+    uint32_t page_size;
+    uint32_t start_offset;
+    uint32_t end_offset;
+    uint32_t page_offset;
 
     if (length == 0U)
     {
         return BOOT_ERR_NONE;
     }
 
-    if (address < g_target_config.flash_base)
+    if (!boot_target_flash_range_is_valid(&g_target_config, address, length))
     {
         return BOOT_ERR_RANGE;
     }
 
-    start_page = (address - g_target_config.flash_base) / FLASH_PAGE_SIZE;
-    end_page = (address + length - 1U - g_target_config.flash_base) / FLASH_PAGE_SIZE;
+    page_size = boot_g431_flash_page_size();
+    start_offset = address - g_target_config.flash_base;
+    end_offset = start_offset + length;
+    page_offset = (start_offset / page_size) * page_size;
+    while (page_offset < end_offset)
+    {
+        FLASH_EraseInitTypeDef erase = {0};
+        uint32_t page_error = 0U;
 
-    erase.TypeErase = FLASH_TYPEERASE_PAGES;
-    erase.Banks = FLASH_BANK_1;
-    erase.Page = start_page;
-    erase.NbPages = (end_page - start_page) + 1U;
+        erase.TypeErase = FLASH_TYPEERASE_PAGES;
+        erase.Banks = boot_g431_flash_bank_for_offset(page_offset);
+        erase.Page = boot_g431_flash_page_for_offset(page_offset);
+        erase.NbPages = 1U;
 
-    return (HAL_FLASHEx_Erase(&erase, &page_error) == HAL_OK) ? BOOT_ERR_NONE : BOOT_ERR_FLASH;
+        if (HAL_FLASHEx_Erase(&erase, &page_error) != HAL_OK)
+        {
+            return BOOT_ERR_FLASH;
+        }
+
+        page_offset += page_size;
+    }
+
+    return BOOT_ERR_NONE;
 }
 
 boot_error_t boot_platform_flash_write(uint32_t address, const uint8_t *data, uint32_t length)
@@ -177,7 +176,22 @@ boot_error_t boot_platform_flash_write(uint32_t address, const uint8_t *data, ui
     uint32_t offset = 0U;
     uint64_t word = 0U;
 
-    if ((length % 8U) != 0U)
+    if (length == 0U)
+    {
+        return BOOT_ERR_NONE;
+    }
+
+    if (!boot_target_flash_write_length_is_aligned(&g_target_config, length))
+    {
+        return BOOT_ERR_ALIGNMENT;
+    }
+
+    if (!boot_target_flash_range_is_valid(&g_target_config, address, length))
+    {
+        return BOOT_ERR_RANGE;
+    }
+
+    if (!boot_target_flash_write_address_is_aligned(&g_target_config, address))
     {
         return BOOT_ERR_ALIGNMENT;
     }
@@ -210,7 +224,7 @@ void boot_platform_jump_to_app(uint32_t app_base)
     SysTick->LOAD = 0U;
     SysTick->VAL = 0U;
 
-    for (uint32_t i = 0U; i < 8U; ++i)
+    for (uint32_t i = 0U; i < (sizeof(NVIC->ICER) / sizeof(NVIC->ICER[0])); ++i)
     {
         NVIC->ICER[i] = 0xFFFFFFFFUL;
         NVIC->ICPR[i] = 0xFFFFFFFFUL;

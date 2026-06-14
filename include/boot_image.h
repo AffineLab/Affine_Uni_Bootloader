@@ -18,7 +18,8 @@ typedef struct
     uint32_t image_crc32;
     uint32_t app_base;
     uint32_t flags;
-    uint32_t reserved[9];
+    uint32_t metadata_crc32;
+    uint32_t reserved[8];
 } boot_metadata_t;
 
 typedef struct
@@ -45,11 +46,23 @@ typedef struct
     uint32_t write_size;
     uint32_t max_chunk_size;
     uint32_t target_id;
-    const char *target_name;
 } boot_target_config_t;
 
+static inline uint32_t boot_metadata_copy_count(const boot_target_config_t *cfg)
+{
+    return (cfg->metadata_size >= (2U * cfg->erase_size)) ? 2U : 1U;
+}
+
+static inline uint32_t boot_metadata_copy_address(const boot_target_config_t *cfg, uint32_t copy_index)
+{
+    return cfg->metadata_base + (copy_index * cfg->erase_size);
+}
+
+uint32_t boot_metadata_crc32(const boot_metadata_t *metadata);
+void boot_metadata_update_crc(boot_metadata_t *metadata);
 bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_base);
 bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata);
+bool boot_metadata_select_valid(const boot_target_config_t *cfg, boot_metadata_t *out_metadata);
 bool boot_image_crc_is_valid(const boot_metadata_t *metadata);
 bool boot_image_is_committed_and_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata);
 

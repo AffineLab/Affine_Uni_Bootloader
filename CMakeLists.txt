@@ -35,55 +35,79 @@ target_link_libraries(bootloader_stub PRIVATE boot_core)
 option(AFFINE_BUILD_STM32G431 "Build STM32G431 bootloader target" OFF)
 option(AFFINE_BUILD_STM32H503 "Build STM32H503 bootloader target" OFF)
 
+set(BOOT_TARGET_COMMON_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/targets/common/boot_target_common.c
+)
+
+function(affine_require_existing_path path description)
+    if(NOT EXISTS "${path}")
+        message(FATAL_ERROR
+            "Vendored ${description} was not found at:\n"
+            "  ${path}\n"
+            "Restore the required third_party subtree before building this target."
+        )
+    endif()
+endfunction()
+
 if(AFFINE_BUILD_STM32G431)
-    set(MAI_STM32_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Mai_stm32")
+    set(STM32G431_CUBE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stm32cube_g4")
     set(STM32G431_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/stm32g431")
+    set(STM32G431_COMPOSITE_DIR "${STM32G431_CUBE_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE")
+
+    affine_require_existing_path("${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver"
+        "STM32G431 HAL driver directory")
+    affine_require_existing_path("${STM32G431_CUBE_DIR}/Core/Startup/startup_stm32g431cbux.s"
+        "STM32G431 startup file")
+    affine_require_existing_path("${STM32G431_COMPOSITE_DIR}/Core/Src/usbd_core.c"
+        "STM32G431 USB Device middleware")
 
     add_executable(bootloader_stm32g431
         src/boot_protocol.c
         src/boot_image.c
         src/boot_security.c
         src/bootloader.c
+        ${BOOT_TARGET_COMMON_SOURCES}
         ${STM32G431_TARGET_DIR}/main.c
         ${STM32G431_TARGET_DIR}/usb.c
         ${STM32G431_TARGET_DIR}/usbd_desc.c
         ${STM32G431_TARGET_DIR}/usbd_cdc_acm_if.c
         ${STM32G431_TARGET_DIR}/boot_platform_stm32g431.c
+        ${STM32G431_TARGET_DIR}/baremetal_runtime.c
         ${STM32G431_TARGET_DIR}/stm32g4xx_it.c
-        ${MAI_STM32_DIR}/Core/Src/system_stm32g4xx.c
-        ${MAI_STM32_DIR}/Core/Startup/startup_stm32g431cbux.s
-        ${MAI_STM32_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE/App/usb_device.c
+        ${STM32G431_CUBE_DIR}/Core/Src/system_stm32g4xx.c
+        ${STM32G431_CUBE_DIR}/Core/Startup/startup_stm32g431cbux.s
+        ${STM32G431_COMPOSITE_DIR}/App/usb_device.c
         ${STM32G431_TARGET_DIR}/usbd_conf.c
-        ${MAI_STM32_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE/Core/Src/usbd_core.c
-        ${MAI_STM32_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE/Core/Src/usbd_ctlreq.c
-        ${MAI_STM32_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE/Core/Src/usbd_ioreq.c
-        ${MAI_STM32_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE/Class/COMPOSITE/Src/usbd_composite.c
-        ${MAI_STM32_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE/Class/CDC_ACM/Src/usbd_cdc_acm.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ex.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ramfunc.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pcd.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pcd_ex.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr_ex.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc_ex.c
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_ll_usb.c
+        ${STM32G431_COMPOSITE_DIR}/Core/Src/usbd_core.c
+        ${STM32G431_COMPOSITE_DIR}/Core/Src/usbd_ctlreq.c
+        ${STM32G431_COMPOSITE_DIR}/Core/Src/usbd_ioreq.c
+        ${STM32G431_COMPOSITE_DIR}/Class/COMPOSITE/Src/usbd_composite.c
+        ${STM32G431_COMPOSITE_DIR}/Class/CDC_ACM/Src/usbd_cdc_acm.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ramfunc.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pcd.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pcd_ex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr_ex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc_ex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_ll_usb.c
     )
 
     target_include_directories(bootloader_stm32g431 PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${STM32G431_TARGET_DIR}
-        ${MAI_STM32_DIR}/Core/Inc
-        ${MAI_STM32_DIR}/Drivers/STM32G4xx_HAL_Driver/Inc
-        ${MAI_STM32_DIR}/Drivers/CMSIS/Include
-        ${MAI_STM32_DIR}/Drivers/CMSIS/Device/ST/STM32G4xx/Include
-        ${MAI_STM32_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE/Core/Inc
-        ${MAI_STM32_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE/Class/CDC_ACM/Inc
-        ${MAI_STM32_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE/Class/COMPOSITE/Inc
+        ${STM32G431_CUBE_DIR}/Core/Inc
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Inc
+        ${STM32G431_CUBE_DIR}/Drivers/CMSIS/Include
+        ${STM32G431_CUBE_DIR}/Drivers/CMSIS/Device/ST/STM32G4xx/Include
+        ${STM32G431_COMPOSITE_DIR}/Core/Inc
+        ${STM32G431_COMPOSITE_DIR}/Class/CDC_ACM/Inc
+        ${STM32G431_COMPOSITE_DIR}/Class/COMPOSITE/Inc
     )
 
     target_compile_definitions(bootloader_stm32g431 PRIVATE
@@ -107,30 +131,55 @@ if(AFFINE_BUILD_STM32G431)
         -Wextra
     )
 
+    set_source_files_properties(
+        ${STM32G431_COMPOSITE_DIR}/Class/COMPOSITE/Src/usbd_composite.c
+        ${STM32G431_COMPOSITE_DIR}/Class/CDC_ACM/Src/usbd_cdc_acm.c
+        PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter"
+    )
+
     target_link_options(bootloader_stm32g431 PRIVATE
         -mcpu=cortex-m4
         -mthumb
         -mfpu=fpv4-sp-d16
         -mfloat-abi=hard
         -flto
+        -nostartfiles
         --specs=nano.specs
         --specs=nosys.specs
         -T${STM32G431_TARGET_DIR}/STM32G431CBUX_BOOTLOADER.ld
         -Wl,--gc-sections
         -Wl,-Map=${CMAKE_BINARY_DIR}/bootloader_stm32g431.map
     )
+
+    if(CMAKE_OBJCOPY)
+        add_custom_command(TARGET bootloader_stm32g431 POST_BUILD
+            COMMAND ${CMAKE_OBJCOPY} -O binary
+                $<TARGET_FILE:bootloader_stm32g431>
+                ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
+            BYPRODUCTS ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
+            COMMENT "Generating bootloader_stm32g431.bin"
+        )
+    endif()
 endif()
 
 if(AFFINE_BUILD_STM32H503)
-    set(LINNEAPRO_H503_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../LinneaPro_H503_Chuni")
+    set(STM32H503_CUBE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stm32cube_h5")
     set(STM32H503_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/stm32h503")
-    set(STM32H503_COMPOSITE_DIR "${LINNEAPRO_H503_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE")
+    set(STM32H503_COMPOSITE_DIR "${STM32H503_CUBE_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE")
+
+    affine_require_existing_path("${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver"
+        "STM32H503 HAL driver directory")
+    affine_require_existing_path("${STM32H503_CUBE_DIR}/Core/Startup/startup_stm32h503cbtx.s"
+        "STM32H503 startup file")
+    affine_require_existing_path("${STM32H503_COMPOSITE_DIR}/Core/Src/usbd_core.c"
+        "STM32H503 USB Device middleware")
 
     add_executable(bootloader_stm32h503
         src/boot_protocol.c
         src/boot_image.c
         src/boot_security.c
         src/bootloader.c
+        ${BOOT_TARGET_COMMON_SOURCES}
         ${STM32H503_TARGET_DIR}/main.c
         ${STM32H503_TARGET_DIR}/usb.c
         ${STM32H503_TARGET_DIR}/usbd_desc.c
@@ -138,8 +187,8 @@ if(AFFINE_BUILD_STM32H503)
         ${STM32H503_TARGET_DIR}/boot_platform_stm32h503.c
         ${STM32H503_TARGET_DIR}/baremetal_runtime.c
         ${STM32H503_TARGET_DIR}/stm32h5xx_it.c
-        ${LINNEAPRO_H503_DIR}/Core/Src/system_stm32h5xx.c
-        ${LINNEAPRO_H503_DIR}/Core/Startup/startup_stm32h503cbtx.s
+        ${STM32H503_CUBE_DIR}/Core/Src/system_stm32h5xx.c
+        ${STM32H503_CUBE_DIR}/Core/Startup/startup_stm32h503cbtx.s
         ${STM32H503_COMPOSITE_DIR}/App/usb_device.c
         ${STM32H503_COMPOSITE_DIR}/Target/usbd_conf.c
         ${STM32H503_COMPOSITE_DIR}/Core/Src/usbd_core.c
@@ -147,28 +196,28 @@ if(AFFINE_BUILD_STM32H503)
         ${STM32H503_COMPOSITE_DIR}/Core/Src/usbd_ioreq.c
         ${STM32H503_COMPOSITE_DIR}/Class/COMPOSITE/Src/usbd_composite.c
         ${STM32H503_COMPOSITE_DIR}/Class/CDC_ACM/Src/usbd_cdc_acm.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_cortex.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_flash.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_flash_ex.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_pcd.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_pcd_ex.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_pwr.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_pwr_ex.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_rcc.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_rcc_ex.c
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_ll_usb.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_cortex.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_flash.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_flash_ex.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_pcd.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_pcd_ex.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_pwr.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_pwr_ex.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_rcc.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_hal_rcc_ex.c
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Src/stm32h5xx_ll_usb.c
     )
 
     target_include_directories(bootloader_stm32h503 PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${STM32H503_TARGET_DIR}
-        ${LINNEAPRO_H503_DIR}/Core/Inc
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Inc
-        ${LINNEAPRO_H503_DIR}/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy
-        ${LINNEAPRO_H503_DIR}/Drivers/CMSIS/Include
-        ${LINNEAPRO_H503_DIR}/Drivers/CMSIS/Device/ST/STM32H5xx/Include
+        ${STM32H503_CUBE_DIR}/Core/Inc
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Inc
+        ${STM32H503_CUBE_DIR}/Drivers/STM32H5xx_HAL_Driver/Inc/Legacy
+        ${STM32H503_CUBE_DIR}/Drivers/CMSIS/Include
+        ${STM32H503_CUBE_DIR}/Drivers/CMSIS/Device/ST/STM32H5xx/Include
         ${STM32H503_COMPOSITE_DIR}/App
         ${STM32H503_COMPOSITE_DIR}/Target
         ${STM32H503_COMPOSITE_DIR}/Core/Inc
@@ -184,7 +233,7 @@ if(AFFINE_BUILD_STM32H503)
     target_compile_options(bootloader_stm32h503 PRIVATE
         -mcpu=cortex-m33
         -mthumb
-        -Os
+        -Oz
         -flto
         -ffunction-sections
         -fdata-sections
@@ -193,6 +242,13 @@ if(AFFINE_BUILD_STM32H503)
         -fno-asynchronous-unwind-tables
         -Wall
         -Wextra
+    )
+
+    set_source_files_properties(
+        ${STM32H503_COMPOSITE_DIR}/Target/usbd_conf.c
+        ${STM32H503_COMPOSITE_DIR}/Class/COMPOSITE/Src/usbd_composite.c
+        ${STM32H503_COMPOSITE_DIR}/Class/CDC_ACM/Src/usbd_cdc_acm.c
+        PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter"
     )
 
     target_link_options(bootloader_stm32h503 PRIVATE

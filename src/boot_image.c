@@ -1,10 +1,38 @@
 #include "boot_image.h"
 
+#include <string.h>
+
 #include "boot_protocol.h"
+
+uint32_t boot_metadata_crc32(const boot_metadata_t *metadata)
+{
+    boot_metadata_t copy;
+
+    if (metadata == NULL)
+    {
+        return 0U;
+    }
+
+    copy = *metadata;
+    copy.metadata_crc32 = 0U;
+    return boot_crc32_update(0U, &copy, sizeof(copy));
+}
+
+void boot_metadata_update_crc(boot_metadata_t *metadata)
+{
+    if (metadata == NULL)
+    {
+        return;
+    }
+
+    metadata->metadata_crc32 = 0U;
+    metadata->metadata_crc32 = boot_metadata_crc32(metadata);
+}
 
 static bool boot_address_in_sram(const boot_target_config_t *cfg, uint32_t addr)
 {
-    return (addr >= cfg->sram_base) && (addr <= (cfg->sram_base + cfg->sram_size));
+    const uint32_t sram_end = cfg->sram_base + cfg->sram_size;
+    return (addr >= cfg->sram_base) && (addr <= sram_end);
 }
 
 static bool boot_address_in_app_slot(const boot_target_config_t *cfg, uint32_t addr)
@@ -61,7 +89,31 @@ bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata
         return false;
     }
 
-    return true;
+    return (metadata->metadata_crc32 != 0U) && (metadata->metadata_crc32 == boot_metadata_crc32(metadata));
+}
+
+bool boot_metadata_select_valid(const boot_target_config_t *cfg, boot_metadata_t *out_metadata)
+{
+    const uint32_t copy_count = boot_metadata_copy_count(cfg);
+
+    for (uint32_t copy = 0U; copy < copy_count; ++copy)
+    {
+        const uint32_t address = boot_metadata_copy_address(cfg, copy);
+        const boot_metadata_t *candidate = (const boot_metadata_t *)address;
+
+        if (!boot_metadata_is_valid(cfg, candidate))
+        {
+            continue;
+        }
+
+        if (out_metadata != NULL)
+        {
+            *out_metadata = *candidate;
+        }
+        return true;
+    }
+
+    return false;
 }
 
 bool boot_image_crc_is_valid(const boot_metadata_t *metadata)

@@ -24,6 +24,8 @@ The project is intended for STM32-based devices that need a compact firmware upd
 include/                  Public bootloader interfaces
 src/                      Shared protocol, image, security, and state-machine code
 targets/                  MCU-specific platform implementations and linker scripts
+targets/common/           Shared target-side helpers for flash range checks and USB transport
+third_party/              Vendored STM32Cube HAL/CMSIS/startup and ST USB middleware subsets
 cmake/toolchains/         Cross-compilation toolchain files
 tools/boot_test.py        Host-side USB CDC smoke test and flashing utility
 ```
@@ -35,9 +37,9 @@ The transport is a USB CDC byte stream. The bootloader protocol adds its own fix
 Main commands:
 
 - `HELLO`: query protocol version, target ID, application base address, slot size, and maximum chunk size.
-- `BEGIN`: start a firmware download session and erase the application and metadata regions.
+- `BEGIN`: start a firmware download session and erase the application pages covered by the image plus metadata regions.
 - `DATA`: write one aligned firmware chunk at the next expected offset.
-- `COMMIT`: verify the received image and write committed metadata.
+- `COMMIT`: verify the received image, read back flash CRC, and write committed metadata.
 - `ABORT`: cancel the active session.
 - `GET_STATUS`: query current state, error code, written size, and rolling CRC.
 - `GET_DIAG`: query transport and frame decoder diagnostics.
@@ -51,7 +53,7 @@ Applications remain standard bare-metal images:
 - `APP_BASE + 0x04` is the reset handler.
 - No private bootloader header is inserted before the vector table.
 
-The bootloader stores image metadata in a separate flash region near the end of the application slot. On boot, it validates metadata, vector table addresses, and image CRC before jumping to the application.
+The bootloader stores CRC-protected image metadata in a separate flash region near the end of the application slot. Targets with enough reserved metadata space keep two erase-unit metadata copies and use the newest valid copy on boot. On boot, the bootloader validates metadata, vector table addresses, and image CRC before jumping to the application.
 
 ## Security Model
 
@@ -68,7 +70,24 @@ This keeps the update pipeline stable while leaving room for signature verificat
 
 ## Building
 
-This project uses CMake. The STM32 targets expect vendor HAL and USB middleware sources in adjacent project directories referenced by `CMakeLists.txt`.
+This project uses CMake. The bootloader core and target glue live in this repository. Minimal STM32Cube HAL/CMSIS/startup and ST USB middleware subsets needed for the supported targets are vendored under `third_party/`.
+
+Vendored third-party source layout:
+
+| Path | Purpose |
+| --- | --- |
+| `third_party/stm32cube_g4` | STM32G431 HAL/CMSIS/startup plus USB Device middleware files used by the G431 build. |
+| `third_party/stm32cube_h5` | STM32H503 HAL/CMSIS/startup plus USB Device middleware files used by the H503 build. |
+
+The vendored files keep their original third-party copyright and license headers. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Toolchain discovery:
+
+The Arm GNU toolchain is resolved from `PATH` by default. If it is not on `PATH`, point CMake at either the toolchain root or its `bin` directory.
+
+| Variable | Purpose |
+| --- | --- |
+| `AFFINE_ARM_NONE_EABI_TOOLCHAIN_ROOT` | Optional `arm-none-eabi` toolchain root or `bin` directory. `ARM_NONE_EABI_TOOLCHAIN_ROOT` can also be set in the environment. |
 
 Example STM32H503 build:
 
@@ -101,7 +120,10 @@ py tools\boot_test.py COM5 hello
 py tools\boot_test.py COM5 status
 py tools\boot_test.py COM5 probe
 py tools\boot_test.py COM5 flash firmware.bin --run
+py tools\boot_test.py COM3 flash firmware.bin --app-jump --run --wait-app
 ```
+
+When `--app-jump` is used, the tool can wait for the bootloader USB PID to re-enumerate and continue on the new COM port. When `--run --wait-app` is used, it can also wait for the application USB PID after `BOOT_APP`.
 
 Install the Python serial dependency if needed:
 
@@ -120,4 +142,4 @@ An application that runs behind this bootloader should:
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+Affine-authored code is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE). Vendored third-party files retain their original licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -16,8 +16,7 @@ static const boot_target_config_t g_target_config = {
     .erase_size = 0x0800UL,
     .write_size = 2UL,
     .max_chunk_size = 256UL,
-    .target_id = TARGET_ID_STM32F072,
-    .target_name = "STM32F072"
+    .target_id = TARGET_ID_STM32F072
 };
 
 #endif

@@ -8,6 +8,7 @@
 
 #define BOOT_USB_RX_FIFO_SIZE  1024U
 #define BOOT_USB_DRAIN_CHUNK    64U
+#define BOOT_AUTO_BOOT_DELAY_MS 1000U
 
 static bootloader_t g_bootloader;
 static volatile uint16_t g_usb_rx_head;
@@ -86,17 +87,29 @@ void Error_Handler(void)
 
 int main(void)
 {
+    uint32_t boot_wait_start_ms;
+
     memset((void *)g_usb_rx_fifo, 0, sizeof(g_usb_rx_fifo));
     g_usb_rx_head = 0U;
     g_usb_rx_tail = 0U;
 
     bootloader_init(&g_bootloader);
-    bootloader_try_boot_app(&g_bootloader);
 
     HAL_Init();
     SystemClock_Config();
     MX_USB_PCD_Init();
     MX_USB_DEVICE_Init();
+
+    boot_wait_start_ms = HAL_GetTick();
+    while (((HAL_GetTick() - boot_wait_start_ms) < BOOT_AUTO_BOOT_DELAY_MS) && (g_bootloader.frame_ok_count == 0U))
+    {
+        boot_stm32h503_poll();
+    }
+
+    if (g_bootloader.frame_ok_count == 0U)
+    {
+        bootloader_try_boot_app(&g_bootloader);
+    }
 
     for (;;)
     {
