@@ -1,0 +1,17 @@
+.git
+build-*
+cmake-build-*
+CMakeCache.txt
+CMakeFiles
+build.ninja
+cmake_install.cmake
+compile_commands.json
+__pycache__
+*.a
+*.bin
+*.elf
+*.hex
+*.map
+*.o
+*.obj
+
