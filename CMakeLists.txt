@@ -8,6 +8,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 add_library(boot_core STATIC
     src/boot_protocol.c
+    src/boot_crypto.c
     src/boot_image.c
     src/boot_security.c
     src/bootloader.c
@@ -63,6 +64,7 @@ if(AFFINE_BUILD_STM32G431)
 
     add_executable(bootloader_stm32g431
         src/boot_protocol.c
+        src/boot_crypto.c
         src/boot_image.c
         src/boot_security.c
         src/bootloader.c
@@ -176,6 +178,7 @@ if(AFFINE_BUILD_STM32H503)
 
     add_executable(bootloader_stm32h503
         src/boot_protocol.c
+        src/boot_crypto.c
         src/boot_image.c
         src/boot_security.c
         src/bootloader.c

@@ -20,6 +20,7 @@ bool boot_platform_force_bootloader(void);
 void boot_platform_transport_send(const uint8_t *data, size_t length);
 void boot_platform_transport_poll(void);
 bool boot_platform_transport_get_diag(boot_diag_response_t *out_diag);
+void boot_platform_watchdog_kick(void);
 void boot_platform_flash_unlock(void);
 void boot_platform_flash_lock(void);
 boot_error_t boot_platform_flash_erase(uint32_t address, uint32_t length);

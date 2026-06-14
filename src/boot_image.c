@@ -29,6 +29,49 @@ void boot_metadata_update_crc(boot_metadata_t *metadata)
     metadata->metadata_crc32 = boot_metadata_crc32(metadata);
 }
 
+uint32_t boot_security_state_crc32(const boot_security_state_t *state)
+{
+    boot_security_state_t copy;
+
+    if (state == NULL)
+    {
+        return 0U;
+    }
+
+    copy = *state;
+    copy.state_crc32 = 0U;
+    return boot_crc32_update(0U, &copy, sizeof(copy));
+}
+
+void boot_security_state_update_crc(boot_security_state_t *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    state->state_crc32 = 0U;
+    state->state_crc32 = boot_security_state_crc32(state);
+}
+
+void boot_security_state_prepare(const boot_target_config_t *cfg,
+                                 boot_security_state_t *state,
+                                 uint32_t rollback_floor_version)
+{
+    if ((cfg == NULL) || (state == NULL))
+    {
+        return;
+    }
+
+    memset(state, 0, sizeof(*state));
+    state->magic = BOOT_SECURITY_STATE_MAGIC;
+    state->format_version = BOOT_SECURITY_STATE_VERSION;
+    state->target_id = cfg->target_id;
+    state->rollback_floor_version = rollback_floor_version;
+    state->flags = BOOT_SECURITY_STATE_FLAG_ROLLBACK_FLOOR_VALID;
+    boot_security_state_update_crc(state);
+}
+
 static bool boot_address_in_sram(const boot_target_config_t *cfg, uint32_t addr)
 {
     const uint32_t sram_end = cfg->sram_base + cfg->sram_size;
@@ -109,6 +152,62 @@ bool boot_metadata_select_valid(const boot_target_config_t *cfg, boot_metadata_t
         if (out_metadata != NULL)
         {
             *out_metadata = *candidate;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+bool boot_security_state_is_valid(const boot_target_config_t *cfg, const boot_security_state_t *state)
+{
+    const uint32_t state_end = boot_security_state_offset(cfg) + (uint32_t)sizeof(*state);
+
+    if (state_end > cfg->erase_size)
+    {
+        return false;
+    }
+
+    if (state->magic != BOOT_SECURITY_STATE_MAGIC)
+    {
+        return false;
+    }
+
+    if (state->format_version != BOOT_SECURITY_STATE_VERSION)
+    {
+        return false;
+    }
+
+    if (state->target_id != cfg->target_id)
+    {
+        return false;
+    }
+
+    if ((state->flags & BOOT_SECURITY_STATE_FLAG_ROLLBACK_FLOOR_VALID) == 0U)
+    {
+        return false;
+    }
+
+    return (state->state_crc32 != 0U) && (state->state_crc32 == boot_security_state_crc32(state));
+}
+
+bool boot_security_state_select_valid(const boot_target_config_t *cfg, boot_security_state_t *out_state)
+{
+    const uint32_t copy_count = boot_metadata_copy_count(cfg);
+
+    for (uint32_t copy = 0U; copy < copy_count; ++copy)
+    {
+        const uint32_t address = boot_security_state_copy_address(cfg, copy);
+        const boot_security_state_t *candidate = (const boot_security_state_t *)address;
+
+        if (!boot_security_state_is_valid(cfg, candidate))
+        {
+            continue;
+        }
+
+        if (out_state != NULL)
+        {
+            *out_state = *candidate;
         }
         return true;
     }

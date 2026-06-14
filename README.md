@@ -37,13 +37,18 @@ The transport is a USB CDC byte stream. The bootloader protocol adds its own fix
 Main commands:
 
 - `HELLO`: query protocol version, target ID, application base address, slot size, and maximum chunk size.
-- `BEGIN`: start a firmware download session and erase the application pages covered by the image plus metadata regions.
+- `BEGIN`: start a firmware download session and erase the application pages covered by the image.
 - `DATA`: write one aligned firmware chunk at the next expected offset.
 - `COMMIT`: verify the received image, read back flash CRC, and write committed metadata.
 - `ABORT`: cancel the active session.
-- `GET_STATUS`: query current state, error code, written size, and rolling CRC.
+- `GET_STATUS`: query current state, error code, written size, rolling CRC, current operation, and operation progress.
 - `GET_DIAG`: query transport and frame decoder diagnostics.
-- `BOOT_APP`: jump to the committed application if it validates.
+- `GET_METADATA`: query the selected valid metadata copy without running a full image CRC.
+- `CLEAR_METADATA`: erase application metadata copies and leave the device in bootloader mode. Persistent security state is preserved by default.
+- `SET_MANIFEST`: provide a signed firmware manifest after `BEGIN` and before `DATA`.
+- `VERIFY_IMAGE`: validate selected metadata, vector table, full image CRC, and security policy.
+- `REBOOT`: acknowledge the command and reset the MCU.
+- `BOOT_APP`: acknowledge the command, then jump to the committed application if it validates.
 
 ## Image Layout
 
@@ -53,20 +58,46 @@ Applications remain standard bare-metal images:
 - `APP_BASE + 0x04` is the reset handler.
 - No private bootloader header is inserted before the vector table.
 
-The bootloader stores CRC-protected image metadata in a separate flash region near the end of the application slot. Targets with enough reserved metadata space keep two erase-unit metadata copies and use the newest valid copy on boot. On boot, the bootloader validates metadata, vector table addresses, and image CRC before jumping to the application.
+The bootloader stores CRC-protected image metadata in a separate flash region near the end of the application slot. Targets with enough reserved metadata space keep two erase-unit metadata copies and use a valid copy on boot. On boot, the bootloader validates metadata, vector table addresses, and image CRC before jumping to the application.
+
+Supported targets reserve 24 KiB for the bootloader:
+
+| Target | Bootloader | Application slot | Metadata |
+| --- | --- | --- | --- |
+| `STM32G431` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801DFFF` (96 KiB) | `0x0801E000`-`0x0801FFFF` |
+| `STM32H503` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`-`0x0801FFFF` |
 
 ## Security Model
 
-The security layer is intentionally pluggable. The current default implementation is a no-op and accepts only `flags == 0`.
+The bootloader supports both unsigned development updates and signed secure updates.
 
-Reserved extension points include:
+Security flags:
 
-- session policy validation in `boot_security_begin()`
-- streaming chunk transformation or authentication in `boot_security_transform_chunk()`
-- final image verification in `boot_security_verify_image()`
-- capability reporting through `boot_security_capabilities()`
+| Flag | Meaning |
+| --- | --- |
+| `BOOT_FLAG_VERIFY_SIGNATURE` | Require a signed manifest before accepting image data. |
+| `BOOT_FLAG_ENCRYPTED_IMAGE` | Treat incoming `DATA` chunks as AES-128 CTR ciphertext. This flag also requires a signed manifest. |
+| `BOOT_FLAG_ANTI_ROLLBACK` | Request rollback-floor enforcement for this signed update. |
 
-This keeps the update pipeline stable while leaving room for signature verification, encrypted streams, and anti-rollback policy.
+Signed manifest updates use `SET_MANIFEST` after `BEGIN` and before the first `DATA` frame. The manifest includes target ID, image size, CRC32, firmware version, flags, key ID, SHA-256 of the plaintext image, AES-CTR nonce, and an RSA-2048 PKCS#1 v1.5/SHA-256 signature. The bootloader stores the signed manifest fields in metadata and verifies the signature and SHA-256 again before booting an application.
+
+Unsigned development updates and signed secure updates can coexist. The default build allows unsigned updates so development and factory recovery remain simple. Production builds can change this policy with compile-time macros in [include/boot_policy.h](include/boot_policy.h):
+
+| Macro | Default | Meaning |
+| --- | --- | --- |
+| `AFFINE_BOOT_ALLOW_UNSIGNED_UPDATES` | `1` | Allow `BEGIN` with no signature flag. |
+| `AFFINE_BOOT_REQUIRE_SIGNED_UPDATES` | `0` | Reject unsigned updates and unsigned committed apps. |
+| `AFFINE_BOOT_ALLOW_OPTIONAL_ANTI_ROLLBACK` | `1` | Allow a signed manifest to opt into rollback-floor updates with `BOOT_FLAG_ANTI_ROLLBACK`. |
+| `AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED` | `0` | Treat every signed update as anti-rollback protected, even if the flag is omitted. |
+| `AFFINE_BOOT_PRESERVE_SECURITY_STATE_ON_CLEAR_METADATA` | `1` | Keep rollback-floor state when application metadata is cleared. |
+
+Anti-rollback uses a small CRC-protected persistent security state stored beside each metadata copy. When an anti-rollback-protected signed update commits, the bootloader stores `max(previous_floor, firmware_version)` as the rollback floor. Later protected updates and boot validation reject firmware versions below that floor. `CLEAR_METADATA` does not clear this state by default, so clearing app metadata cannot reset the rollback floor.
+
+This is still software-level rollback resistance. Production hardware should also use STM32 readout protection and, where available, option-byte or secure-storage policy for stronger rollback resistance.
+
+Encrypted stream updates decrypt each incoming chunk with AES-128 CTR before writing flash. The default AES key and RSA public key in [include/boot_keys.h](include/boot_keys.h) are development keys and must be replaced for production. Firmware confidentiality also requires MCU readout protection; otherwise an attacker can read the symmetric key from flash.
+
+ST provides full security reference packages such as X-CUBE-SBSFU and cryptographic libraries such as X-CUBE-CRYPTOLIB. This project keeps a compact self-contained implementation for the current 24 KiB bootloader budget, but production products should evaluate replacing the local crypto primitives with ST's maintained cryptographic library or a similarly reviewed backend.
 
 ## Building
 
@@ -118,12 +149,29 @@ ninja -C build-stm32g431 bootloader_stm32g431
 ```powershell
 py tools\boot_test.py COM5 hello
 py tools\boot_test.py COM5 status
+py tools\boot_test.py COM5 metadata
+py tools\boot_test.py COM5 verify-image
 py tools\boot_test.py COM5 probe
 py tools\boot_test.py COM5 flash firmware.bin --run
+py tools\boot_test.py COM5 flash firmware.bin --manifest-key release_rsa.pem
+py tools\boot_test.py COM5 flash firmware.bin --manifest-key release_rsa.pem --encrypted
 py tools\boot_test.py COM3 flash firmware.bin --app-jump --run --wait-app
+py tools\boot_test.py COM5 clear-metadata
+py tools\boot_test.py COM5 reboot
+```
+
+Offline manifest generation for the G431 target:
+
+```powershell
+py tools\boot_test.py COM0 flash firmware.bin `
+  --dry-run `
+  --target-id 0x47343331 `
+  --manifest-key release_rsa.pem `
+  --manifest-out firmware.manifest
 ```
 
 When `--app-jump` is used, the tool can wait for the bootloader USB PID to re-enumerate and continue on the new COM port. When `--run --wait-app` is used, it can also wait for the application USB PID after `BOOT_APP`.
+The `reboot` command also waits for the bootloader USB PID by default; use `--no-wait-bootloader` to only send the command.
 
 Install the Python serial dependency if needed:
 
@@ -139,6 +187,8 @@ An application that runs behind this bootloader should:
 - reserve the metadata flash region
 - keep a normal vector table at the start of the image
 - optionally provide a runtime request path that writes the target bootloader magic value and resets the MCU
+
+Targets may implement `boot_platform_watchdog_kick()` if a hardware watchdog remains active while the bootloader runs. The shared core calls this hook during polling, page erase progress, image CRC verification, and deferred reboot/application-jump waits. The STM32G431 and STM32H503 hooks refresh IWDG directly when the peripheral definition is present, which keeps an already-enabled independent watchdog alive without starting one on boards that do not use it.
 
 ## License
 

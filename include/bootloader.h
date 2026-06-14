@@ -13,8 +13,17 @@ typedef enum
     BOOT_STATUS_READY,
     BOOT_STATUS_RECEIVING,
     BOOT_STATUS_COMMITTED,
-    BOOT_STATUS_ERROR
+    BOOT_STATUS_ERROR,
+    BOOT_STATUS_ERASING,
+    BOOT_STATUS_VERIFYING
 } boot_status_t;
+
+typedef enum
+{
+    BOOT_PENDING_ACTION_NONE = 0,
+    BOOT_PENDING_ACTION_REBOOT,
+    BOOT_PENDING_ACTION_BOOT_APP
+} boot_pending_action_t;
 
 typedef struct
 {
@@ -28,6 +37,12 @@ typedef struct
     uint32_t last_decoded_opcode;
     uint32_t last_decoded_sequence;
     uint32_t last_decode_error;
+    boot_operation_t operation;
+    uint32_t operation_progress;
+    uint32_t operation_total;
+    boot_pending_action_t pending_action;
+    uint32_t pending_action_due_ms;
+    uint32_t pending_app_base;
 } bootloader_t;
 
 void bootloader_init(bootloader_t *ctx);

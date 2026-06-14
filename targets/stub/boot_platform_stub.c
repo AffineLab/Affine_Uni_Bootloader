@@ -38,6 +38,10 @@ bool boot_platform_transport_get_diag(boot_diag_response_t *out_diag)
     return true;
 }
 
+void boot_platform_watchdog_kick(void)
+{
+}
+
 void boot_platform_flash_unlock(void)
 {
 }

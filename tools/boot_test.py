@@ -4,23 +4,40 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import pathlib
+import secrets
 import struct
+import subprocess
 import sys
+import tempfile
 import time
 import zlib
 
-try:
-    import serial
-    from serial.tools import list_ports
-except ModuleNotFoundError as exc:  # pragma: no cover - operator guidance
-    raise SystemExit(
-        "pyserial is required. Install it with: py -m pip install pyserial"
-    ) from exc
+serial = None
+list_ports = None
+
+
+def require_pyserial() -> None:
+    global serial, list_ports
+
+    if serial is not None and list_ports is not None:
+        return
+
+    try:
+        import serial as serial_module
+        from serial.tools import list_ports as list_ports_module
+    except ModuleNotFoundError as exc:  # pragma: no cover - operator guidance
+        raise SystemExit(
+            "pyserial is required for serial I/O. Install it with: py -m pip install pyserial"
+        ) from exc
+
+    serial = serial_module
+    list_ports = list_ports_module
 
 
 BOOT_FRAME_MAGIC = 0x42464641
-BOOT_PROTOCOL_VERSION = 0x00010000
+BOOT_PROTOCOL_VERSION = 0x00010003
 
 BOOT_OP_HELLO = 0x0001
 BOOT_OP_BEGIN = 0x0002
@@ -30,11 +47,36 @@ BOOT_OP_ABORT = 0x0005
 BOOT_OP_GET_STATUS = 0x0006
 BOOT_OP_BOOT_APP = 0x0007
 BOOT_OP_GET_DIAG = 0x0008
+BOOT_OP_GET_METADATA = 0x0009
+BOOT_OP_CLEAR_METADATA = 0x000A
+BOOT_OP_REBOOT = 0x000B
+BOOT_OP_VERIFY_IMAGE = 0x000C
+BOOT_OP_SET_MANIFEST = 0x000D
 BOOT_OP_RESPONSE = 0x8000
 
 BOOT_FRAME_MAX_PAYLOAD = 512
+BOOT_MANIFEST_MAGIC = 0x4D464641
+BOOT_MANIFEST_VERSION = 1
+BOOT_MANIFEST_SIZE = 364
 BOOT_DATA_PREFIX_SIZE = 8
 BOOT_DEFAULT_WRITE_ALIGN = 8
+BOOT_FLAG_VERIFY_SIGNATURE = 1 << 0
+BOOT_FLAG_ENCRYPTED_IMAGE = 1 << 1
+BOOT_FLAG_ANTI_ROLLBACK = 1 << 2
+BOOT_DEV_AES128_KEY = bytes.fromhex("fbe7832d34ef7c5406de5f8329515ab9")
+
+BOOT_CAP_NAMES = {
+    0: "VERIFY_SIGNATURE",
+    1: "ENCRYPTED_STREAM",
+    2: "ANTI_ROLLBACK",
+    3: "UNSIGNED_UPDATES",
+}
+
+BOOT_FLAG_NAMES = {
+    0: "VERIFY_SIGNATURE",
+    1: "ENCRYPTED_IMAGE",
+    2: "ANTI_ROLLBACK",
+}
 
 APP_CMD_JUMP_TO_BOOTLOADER = 0x25
 DEFAULT_USB_VID = 0xAFF1
@@ -47,6 +89,20 @@ BOOT_STATUS_NAMES = {
     2: "RECEIVING",
     3: "COMMITTED",
     4: "ERROR",
+    5: "ERASING",
+    6: "VERIFYING",
+}
+
+BOOT_OPERATION_NAMES = {
+    0: "NONE",
+    1: "ERASE_APP",
+    2: "ERASE_METADATA",
+    3: "WRITE_DATA",
+    4: "VERIFY_IMAGE",
+    5: "STORE_METADATA",
+    6: "CLEAR_METADATA",
+    7: "REBOOT",
+    8: "BOOT_APP",
 }
 
 BOOT_ERROR_NAMES = {
@@ -63,6 +119,10 @@ BOOT_ERROR_NAMES = {
     10: "IMAGE_TOO_LARGE",
     11: "IMAGE_CRC",
     12: "NO_VALID_APP",
+    13: "MANIFEST",
+    14: "SIGNATURE",
+    15: "ROLLBACK",
+    16: "DECRYPTION",
 }
 
 
@@ -72,6 +132,11 @@ def crc32(data: bytes) -> int:
 
 def format_hex(data: bytes) -> str:
     return " ".join(f"{byte:02X}" for byte in data)
+
+
+def format_bit_names(value: int, names: dict[int, str]) -> str:
+    active = [name for bit, name in names.items() if (value & (1 << bit)) != 0]
+    return "|".join(active) if active else "none"
 
 
 def build_frame(opcode: int, sequence: int, payload: bytes = b"") -> bytes:
@@ -90,6 +155,129 @@ def build_app_command(command: int, payload: bytes = b"") -> bytes:
     frame = bytes([0xFF, command & 0xFF, len(payload) & 0xFF]) + payload
     checksum = sum(frame) & 0xFF
     return frame + bytes([checksum])
+
+
+def parse_hex_bytes(value: str, expected_size: int) -> bytes:
+    text = value.strip().replace(":", "").replace(" ", "")
+    data = bytes.fromhex(text)
+    if len(data) != expected_size:
+        raise argparse.ArgumentTypeError(f"expected {expected_size} bytes, got {len(data)}")
+    return data
+
+
+def sign_manifest_payload(signed_region: bytes, private_key: pathlib.Path) -> bytes:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        region_path = pathlib.Path(tmpdir) / "manifest-signed-region.bin"
+        sig_path = pathlib.Path(tmpdir) / "manifest.sig"
+        region_path.write_bytes(signed_region)
+        subprocess.run(
+            [
+                "openssl",
+                "dgst",
+                "-sha256",
+                "-sign",
+                str(private_key),
+                "-out",
+                str(sig_path),
+                str(region_path),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        signature = sig_path.read_bytes()
+    if len(signature) != 256:
+        raise RuntimeError(f"unexpected RSA-2048 signature length: {len(signature)}")
+    return signature
+
+
+def build_signed_manifest(
+    target_id: int,
+    image: bytes,
+    image_crc: int,
+    version: int,
+    flags: int,
+    key_id: int,
+    nonce: bytes,
+    private_key: pathlib.Path,
+) -> bytes:
+    signed_region = struct.pack(
+        "<8I32s16s7I",
+        BOOT_MANIFEST_MAGIC,
+        BOOT_MANIFEST_VERSION,
+        target_id,
+        len(image),
+        image_crc,
+        version,
+        flags,
+        key_id,
+        hashlib.sha256(image).digest(),
+        nonce,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    signature = sign_manifest_payload(signed_region, private_key)
+    manifest = signed_region + signature
+    if len(manifest) != BOOT_MANIFEST_SIZE:
+        raise RuntimeError(f"internal manifest size mismatch: {len(manifest)}")
+    return manifest
+
+
+def parse_manifest_header(manifest: bytes) -> dict[str, int]:
+    if len(manifest) != BOOT_MANIFEST_SIZE:
+        raise RuntimeError(f"manifest size mismatch: {len(manifest)}")
+    (
+        magic,
+        manifest_version,
+        target_id,
+        image_size,
+        image_crc32,
+        firmware_version,
+        flags,
+        key_id,
+    ) = struct.unpack_from("<8I", manifest, 0)
+    return {
+        "magic": magic,
+        "manifest_version": manifest_version,
+        "target_id": target_id,
+        "image_size": image_size,
+        "image_crc32": image_crc32,
+        "firmware_version": firmware_version,
+        "flags": flags,
+        "key_id": key_id,
+    }
+
+
+def aes128_ctr_crypt(data: bytes, key: bytes, nonce: bytes) -> bytes:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        in_path = pathlib.Path(tmpdir) / "plain.bin"
+        out_path = pathlib.Path(tmpdir) / "cipher.bin"
+        in_path.write_bytes(data)
+        subprocess.run(
+            [
+                "openssl",
+                "enc",
+                "-aes-128-ctr",
+                "-K",
+                key.hex(),
+                "-iv",
+                nonce.hex(),
+                "-nopad",
+                "-in",
+                str(in_path),
+                "-out",
+                str(out_path),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        return out_path.read_bytes()
 
 
 def read_exact(port: serial.Serial, size: int) -> bytes:
@@ -126,6 +314,7 @@ def open_serial_port(
     open_retries: int,
     retry_interval: float,
 ) -> serial.Serial:
+    require_pyserial()
     last_error: Exception | None = None
     for attempt in range(1, open_retries + 1):
         try:
@@ -165,6 +354,7 @@ def describe_port(port_info: object) -> str:
 
 
 def find_port_info(port_name: str) -> object | None:
+    require_pyserial()
     normalized = port_name.lower()
     for port_info in list_ports.comports():
         if port_info.device.lower() == normalized:
@@ -191,6 +381,7 @@ def wait_for_usb_port(
     timeout: float,
     label: str,
 ) -> object:
+    require_pyserial()
     deadline = time.monotonic() + timeout
     last_seen = "none"
 
@@ -225,10 +416,14 @@ def parse_hello_fields(payload: bytes) -> tuple[int, int, int, int, int, int, in
     return struct.unpack("<7I", payload)
 
 
-def parse_status_fields(payload: bytes) -> tuple[int, int, int, int, int]:
-    if len(payload) != 20:
+def parse_status_fields(payload: bytes) -> tuple[int, int, int, int, int, int, int, int]:
+    if len(payload) == 20:
+        status, last_error, written_size, expected_size, running_crc32 = struct.unpack("<5I", payload)
+        return status, last_error, written_size, expected_size, running_crc32, 0, 0, 0
+
+    if len(payload) != 32:
         raise ValueError(f"unexpected STATUS payload length: {len(payload)}")
-    return struct.unpack("<5I", payload)
+    return struct.unpack("<8I", payload)
 
 
 def decode_hello(payload: bytes) -> str:
@@ -242,18 +437,192 @@ def decode_hello(payload: bytes) -> str:
         f"app_base=0x{app_base:08X}, "
         f"slot_size=0x{slot_size:08X}, "
         f"max_chunk_size={max_chunk_size}, "
-        f"capabilities=0x{capabilities:08X}"
+        f"capabilities=0x{capabilities:08X}({format_bit_names(capabilities, BOOT_CAP_NAMES)})"
     )
 
 
 def decode_status(payload: bytes) -> str:
-    status, last_error, written_size, expected_size, running_crc32 = parse_status_fields(payload)
+    (
+        status,
+        last_error,
+        written_size,
+        expected_size,
+        running_crc32,
+        operation,
+        operation_progress,
+        operation_total,
+    ) = parse_status_fields(payload)
     return (
         f"status={status}({BOOT_STATUS_NAMES.get(status, 'UNKNOWN')}), "
         f"last_error={last_error}({BOOT_ERROR_NAMES.get(last_error, 'UNKNOWN')}), "
         f"written_size={written_size}, "
         f"expected_size={expected_size}, "
-        f"running_crc32=0x{running_crc32:08X}"
+        f"running_crc32=0x{running_crc32:08X}, "
+        f"operation={operation}({BOOT_OPERATION_NAMES.get(operation, 'UNKNOWN')}), "
+        f"operation_progress={operation_progress}/{operation_total}"
+    )
+
+
+def decode_metadata(payload: bytes) -> str:
+    if len(payload) == 80:
+        fields = struct.unpack("<20I", payload)
+        valid, copy_count, selected_copy, app_valid = fields[:4]
+        (
+            magic,
+            target_id,
+            version,
+            image_size,
+            image_crc32,
+            app_base,
+            flags,
+            metadata_crc32,
+            *reserved,
+        ) = fields[4:]
+        selected = "none" if selected_copy == 0xFFFFFFFF else str(selected_copy)
+
+        return (
+            f"valid={valid}, "
+            f"copy_count={copy_count}, "
+            f"selected_copy={selected}, "
+            f"app_vector_valid={app_valid}, "
+            f"magic=0x{magic:08X}, "
+            f"target=0x{target_id:08X}, "
+            f"version={version}, "
+            f"image_size={image_size}, "
+            f"image_crc32=0x{image_crc32:08X}, "
+            f"app_base=0x{app_base:08X}, "
+            f"flags=0x{flags:08X}({format_bit_names(flags, BOOT_FLAG_NAMES)}), "
+            f"metadata_crc32=0x{metadata_crc32:08X}"
+        )
+
+    if len(payload) == 368:
+        (
+            valid,
+            copy_count,
+            selected_copy,
+            app_valid,
+            magic,
+            target_id,
+            version,
+            image_size,
+            image_crc32,
+            app_base,
+            flags,
+            metadata_crc32,
+            key_id,
+            reserved0,
+            reserved1,
+            reserved2,
+            image_sha256,
+            nonce,
+            signature,
+        ) = struct.unpack("<16I32s16s256s", payload)
+        selected = "none" if selected_copy == 0xFFFFFFFF else str(selected_copy)
+
+        return (
+            f"valid={valid}, "
+            f"copy_count={copy_count}, "
+            f"selected_copy={selected}, "
+            f"app_vector_valid={app_valid}, "
+            f"magic=0x{magic:08X}, "
+            f"target=0x{target_id:08X}, "
+            f"version={version}, "
+            f"image_size={image_size}, "
+            f"image_crc32=0x{image_crc32:08X}, "
+            f"app_base=0x{app_base:08X}, "
+            f"flags=0x{flags:08X}({format_bit_names(flags, BOOT_FLAG_NAMES)}), "
+            f"metadata_crc32=0x{metadata_crc32:08X}, "
+            f"key_id={key_id}, "
+            f"image_sha256={image_sha256.hex()}, "
+            f"nonce={nonce.hex()}, "
+            f"signature_present={int(any(signature))}"
+        )
+
+    if len(payload) != 404:
+        return f"unexpected METADATA payload length: {len(payload)}"
+
+    (
+        valid,
+        copy_count,
+        selected_copy,
+        app_valid,
+        security_state_valid,
+        magic,
+        target_id,
+        version,
+        image_size,
+        image_crc32,
+        app_base,
+        flags,
+        metadata_crc32,
+        key_id,
+        reserved0,
+        reserved1,
+        reserved2,
+        image_sha256,
+        nonce,
+        signature,
+        state_magic,
+        state_format_version,
+        state_target_id,
+        rollback_floor_version,
+        state_flags,
+        state_reserved0,
+        state_reserved1,
+        state_crc32,
+    ) = struct.unpack("<17I32s16s256s8I", payload)
+    selected = "none" if selected_copy == 0xFFFFFFFF else str(selected_copy)
+
+    return (
+        f"valid={valid}, "
+        f"copy_count={copy_count}, "
+        f"selected_copy={selected}, "
+        f"app_vector_valid={app_valid}, "
+        f"security_state_valid={security_state_valid}, "
+        f"magic=0x{magic:08X}, "
+        f"target=0x{target_id:08X}, "
+        f"version={version}, "
+        f"image_size={image_size}, "
+        f"image_crc32=0x{image_crc32:08X}, "
+        f"app_base=0x{app_base:08X}, "
+        f"flags=0x{flags:08X}({format_bit_names(flags, BOOT_FLAG_NAMES)}), "
+        f"metadata_crc32=0x{metadata_crc32:08X}, "
+        f"key_id={key_id}, "
+        f"image_sha256={image_sha256.hex()}, "
+        f"nonce={nonce.hex()}, "
+        f"signature_present={int(any(signature))}, "
+        f"rollback_floor_version={rollback_floor_version}, "
+        f"security_state_flags=0x{state_flags:08X}, "
+        f"security_state_crc32=0x{state_crc32:08X}"
+    )
+
+
+def decode_verify_image(payload: bytes) -> str:
+    if len(payload) != 36:
+        return f"unexpected VERIFY_IMAGE payload length: {len(payload)}"
+
+    (
+        result_error,
+        metadata_valid,
+        vector_valid,
+        image_crc_valid,
+        security_valid,
+        image_size,
+        expected_crc32,
+        calculated_crc32,
+        app_base,
+    ) = struct.unpack("<9I", payload)
+
+    return (
+        f"result_error={result_error}({BOOT_ERROR_NAMES.get(result_error, 'UNKNOWN')}), "
+        f"metadata_valid={metadata_valid}, "
+        f"vector_valid={vector_valid}, "
+        f"image_crc_valid={image_crc_valid}, "
+        f"security_valid={security_valid}, "
+        f"image_size={image_size}, "
+        f"expected_crc32=0x{expected_crc32:08X}, "
+        f"calculated_crc32=0x{calculated_crc32:08X}, "
+        f"app_base=0x{app_base:08X}"
     )
 
 
@@ -516,6 +885,12 @@ def flash_image(
     write_align: int,
     begin_timeout: float,
     commit_timeout: float,
+    manifest_path: pathlib.Path | None,
+    manifest_key: pathlib.Path | None,
+    manifest_key_id: int,
+    manifest_nonce: bytes,
+    manifest_out: pathlib.Path | None,
+    encrypt_key: bytes | None,
 ) -> int:
     sequence = 1
 
@@ -533,6 +908,14 @@ def flash_image(
     if write_align == 0:
         write_align = target_default_write_align(target_id)
     image, original_size = load_image_bytes(image_path, pad_byte, write_align)
+    if manifest_key is not None:
+        flags |= BOOT_FLAG_VERIFY_SIGNATURE
+    if (flags & BOOT_FLAG_ENCRYPTED_IMAGE) != 0:
+        flags |= BOOT_FLAG_VERIFY_SIGNATURE
+        if manifest_nonce == bytes(16) and manifest_path is None:
+            manifest_nonce = secrets.token_bytes(16)
+    if (flags & BOOT_FLAG_ANTI_ROLLBACK) != 0:
+        flags |= BOOT_FLAG_VERIFY_SIGNATURE
 
     if protocol_version != BOOT_PROTOCOL_VERSION:
         raise RuntimeError(
@@ -550,6 +933,63 @@ def flash_image(
         raise RuntimeError("device reported unusable max_chunk_size")
 
     image_crc = crc32(image)
+    manifest_payload: bytes | None = None
+    upload_image = image
+    if manifest_path is not None:
+        manifest_payload = manifest_path.read_bytes()
+        manifest_info = parse_manifest_header(manifest_payload)
+        if manifest_info["magic"] != BOOT_MANIFEST_MAGIC:
+            raise RuntimeError("manifest magic mismatch")
+        if manifest_info["manifest_version"] != BOOT_MANIFEST_VERSION:
+            raise RuntimeError("manifest version mismatch")
+        if manifest_info["target_id"] != target_id:
+            raise RuntimeError(
+                f"manifest target mismatch: manifest=0x{manifest_info['target_id']:08X}, "
+                f"device=0x{target_id:08X}"
+            )
+        if manifest_info["image_size"] != len(image):
+            raise RuntimeError(
+                f"manifest image size mismatch: manifest={manifest_info['image_size']}, "
+                f"image={len(image)}"
+            )
+        if manifest_info["image_crc32"] != image_crc:
+            raise RuntimeError(
+                f"manifest image CRC mismatch: manifest=0x{manifest_info['image_crc32']:08X}, "
+                f"image=0x{image_crc:08X}"
+            )
+        if manifest_info["firmware_version"] != version:
+            raise RuntimeError(
+                f"manifest version mismatch: manifest={manifest_info['firmware_version']}, "
+                f"requested={version}"
+            )
+        manifest_flags = manifest_info["flags"]
+        if (manifest_flags & BOOT_FLAG_VERIFY_SIGNATURE) == 0:
+            raise RuntimeError("manifest must set BOOT_FLAG_VERIFY_SIGNATURE")
+        if flags not in (0, manifest_flags):
+            raise RuntimeError(
+                f"manifest flags mismatch: manifest=0x{manifest_flags:08X}, requested=0x{flags:08X}"
+            )
+        flags = manifest_flags
+        manifest_nonce = manifest_payload[64:80]
+    elif manifest_key is not None:
+        manifest_payload = build_signed_manifest(
+            target_id,
+            image,
+            image_crc,
+            version,
+            flags,
+            manifest_key_id,
+            manifest_nonce,
+            manifest_key,
+        )
+        if manifest_out is not None:
+            manifest_out.write_bytes(manifest_payload)
+
+    if (flags & BOOT_FLAG_ENCRYPTED_IMAGE) != 0:
+        if manifest_payload is None:
+            raise RuntimeError("--manifest or --manifest-key is required for encrypted updates")
+        upload_image = aes128_ctr_crypt(image, encrypt_key or BOOT_DEV_AES128_KEY, manifest_nonce)
+
     print(
         f"image={image_path.name}, original_size={original_size}, padded_size={len(image)}, "
         f"crc32=0x{image_crc:08X}, app_base=0x{app_base:08X}, "
@@ -580,20 +1020,38 @@ def flash_image(
             retry_interval,
             label="STATUS-RECOVER",
         )
-        status, last_error, written_size, expected_size, _ = parse_status_fields(status_payload)
+        status, last_error, written_size, expected_size, _, _, _, _ = parse_status_fields(status_payload)
         print(decode_status(status_payload))
         if status != 2 or last_error != 0 or written_size != 0 or expected_size != len(image):
             raise RuntimeError("BEGIN failed and bootloader did not enter RECEIVING state") from exc
         begin_rsp = status_payload
     sequence += 1
-    status, last_error, _, expected_size, _ = parse_status_fields(begin_rsp)
+    status, last_error, _, expected_size, _, _, _, _ = parse_status_fields(begin_rsp)
     if last_error != 0:
         raise RuntimeError(f"BEGIN failed: {decode_status(begin_rsp)}")
     print(decode_status(begin_rsp))
 
-    total_chunks = (len(image) + usable_chunk - 1) // usable_chunk
-    for index, offset in enumerate(range(0, len(image), usable_chunk), start=1):
-        chunk = image[offset: offset + usable_chunk]
+    if (flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0:
+        if manifest_payload is None:
+            raise RuntimeError("--manifest or --manifest-key is required when signature verification is enabled")
+        _, manifest_rsp = send_frame_and_read(
+            port,
+            BOOT_OP_SET_MANIFEST,
+            sequence,
+            manifest_payload,
+            retries,
+            retry_interval,
+            label="SET_MANIFEST",
+        )
+        sequence += 1
+        status, last_error, _, _, _, _, _, _ = parse_status_fields(manifest_rsp)
+        if last_error != 0:
+            raise RuntimeError(f"SET_MANIFEST failed: {decode_status(manifest_rsp)}")
+        print(decode_status(manifest_rsp))
+
+    total_chunks = (len(upload_image) + usable_chunk - 1) // usable_chunk
+    for index, offset in enumerate(range(0, len(upload_image), usable_chunk), start=1):
+        chunk = upload_image[offset: offset + usable_chunk]
         payload = struct.pack("<II", offset, len(chunk)) + chunk
         _, data_rsp = send_frame_and_read(
             port,
@@ -606,7 +1064,7 @@ def flash_image(
         )
         sequence += 1
 
-        status, last_error, written_size, _, running_crc32 = parse_status_fields(data_rsp)
+        status, last_error, written_size, _, running_crc32, _, _, _ = parse_status_fields(data_rsp)
         if last_error != 0:
             raise RuntimeError(
                 f"DATA failed at offset 0x{offset:08X}: {decode_status(data_rsp)}"
@@ -617,18 +1075,42 @@ def flash_image(
         )
 
     commit_payload = struct.pack("<2I", len(image), image_crc)
-    _, commit_rsp = send_frame_and_read(
-        port,
-        BOOT_OP_COMMIT,
-        sequence,
-        commit_payload,
-        retries,
-        retry_interval,
-        label="COMMIT",
-        response_timeout=commit_timeout,
-    )
+    try:
+        _, commit_rsp = send_frame_and_read(
+            port,
+            BOOT_OP_COMMIT,
+            sequence,
+            commit_payload,
+            retries,
+            retry_interval,
+            label="COMMIT",
+            response_timeout=commit_timeout,
+        )
+    except (TimeoutError, serial.SerialException, OSError) as exc:
+        print(f"COMMIT response unavailable: {exc}; reconnecting to verify state", file=sys.stderr)
+        port = reconnect_after_exception(port, open_retries, retry_interval)
+        _, status_payload = send_frame_and_read(
+            port,
+            BOOT_OP_GET_STATUS,
+            0x7FFD,
+            b"",
+            retries,
+            retry_interval,
+            label="STATUS-COMMIT-RECOVER",
+        )
+        status, last_error, written_size, expected_size, running_crc32, _, _, _ = parse_status_fields(status_payload)
+        print(decode_status(status_payload))
+        if (
+            status != 3
+            or last_error != 0
+            or written_size != len(image)
+            or expected_size != len(image)
+            or running_crc32 != image_crc
+        ):
+            raise RuntimeError("COMMIT failed and bootloader did not report COMMITTED state") from exc
+        commit_rsp = status_payload
     sequence += 1
-    status, last_error, written_size, expected_size, running_crc32 = parse_status_fields(commit_rsp)
+    status, last_error, written_size, expected_size, running_crc32, _, _, _ = parse_status_fields(commit_rsp)
     if last_error != 0 or status != 3:
         raise RuntimeError(f"COMMIT failed: {decode_status(commit_rsp)}")
     print(decode_status(commit_rsp))
@@ -701,6 +1183,12 @@ def send_command(
             print(decode_status(rx_payload))
         elif opcode == BOOT_OP_GET_DIAG:
             print(decode_diag(rx_payload))
+        elif opcode == BOOT_OP_GET_METADATA:
+            print(decode_metadata(rx_payload))
+        elif opcode == BOOT_OP_VERIFY_IMAGE:
+            print(decode_verify_image(rx_payload))
+        elif opcode in (BOOT_OP_CLEAR_METADATA, BOOT_OP_REBOOT, BOOT_OP_BOOT_APP, BOOT_OP_SET_MANIFEST):
+            print(decode_status(rx_payload))
         else:
             print(f"payload_len={len(rx_payload)}")
 
@@ -714,7 +1202,18 @@ def main() -> int:
     parser.add_argument("port", help="serial port, for example COM5")
     parser.add_argument(
         "command",
-        choices=["hello", "status", "diag", "probe", "flash", "app-jump"],
+        choices=[
+            "hello",
+            "status",
+            "diag",
+            "metadata",
+            "clear-metadata",
+            "reboot",
+            "verify-image",
+            "probe",
+            "flash",
+            "app-jump",
+        ],
         help="command to send",
     )
     parser.add_argument("image", nargs="?", help="application .bin image path for flash")
@@ -725,7 +1224,33 @@ def main() -> int:
     parser.add_argument("--retry-interval", type=float, default=0.1, help="delay between retries")
     parser.add_argument("--open-retries", type=int, default=10, help="serial open retry count")
     parser.add_argument("--version", type=lambda value: int(value, 0), default=1, help="firmware version for BEGIN")
+    parser.add_argument("--target-id", type=lambda value: int(value, 0), help="target ID for offline manifest dry-run generation")
     parser.add_argument("--flags", type=lambda value: int(value, 0), default=0, help="security flags for BEGIN")
+    parser.add_argument("--manifest", type=pathlib.Path, help="prebuilt signed manifest to send before DATA")
+    parser.add_argument("--manifest-key", type=pathlib.Path, help="RSA-2048 private key used to sign a manifest")
+    parser.add_argument("--manifest-out", type=pathlib.Path, help="write the generated manifest to this path")
+    parser.add_argument("--manifest-key-id", type=lambda value: int(value, 0), default=0, help="manifest signing key identifier")
+    parser.add_argument(
+        "--manifest-nonce",
+        type=lambda value: parse_hex_bytes(value, 16),
+        default=bytes(16),
+        help="16-byte manifest encryption nonce as hex",
+    )
+    parser.add_argument(
+        "--encrypted",
+        action="store_true",
+        help="encrypt the transmitted stream with AES-128 CTR and require a signed manifest",
+    )
+    parser.add_argument(
+        "--anti-rollback",
+        action="store_true",
+        help="request anti-rollback for a signed manifest update",
+    )
+    parser.add_argument(
+        "--encrypt-key",
+        type=lambda value: parse_hex_bytes(value, 16),
+        help="16-byte AES-128 CTR key as hex; defaults to the development key embedded in boot_keys.h",
+    )
     parser.add_argument("--pad-byte", type=lambda value: int(value, 0), default=0xFF, help="padding byte for flash alignment")
     parser.add_argument("--write-align", type=lambda value: int(value, 0), default=0, help="override flash write alignment; 0 auto-detects known targets")
     parser.add_argument("--begin-timeout", type=float, default=6.0, help="response timeout for BEGIN in seconds")
@@ -761,9 +1286,18 @@ def main() -> int:
         commands.append((BOOT_OP_GET_STATUS, 2, b""))
     elif args.command == "diag":
         commands.append((BOOT_OP_GET_DIAG, 3, b""))
+    elif args.command == "metadata":
+        commands.append((BOOT_OP_GET_METADATA, 4, b""))
+    elif args.command == "clear-metadata":
+        commands.append((BOOT_OP_CLEAR_METADATA, 5, b""))
+    elif args.command == "reboot":
+        commands.append((BOOT_OP_REBOOT, 6, b""))
+    elif args.command == "verify-image":
+        commands.append((BOOT_OP_VERIFY_IMAGE, 7, b""))
     elif args.command == "probe":
         commands.append((BOOT_OP_HELLO, 1, b""))
         commands.append((BOOT_OP_GET_STATUS, 2, b""))
+        commands.append((BOOT_OP_GET_METADATA, 3, b""))
     elif args.command == "app-jump":
         pass
     else:
@@ -775,9 +1309,37 @@ def main() -> int:
             image_path = pathlib.Path(args.image)
             write_align = args.write_align or BOOT_DEFAULT_WRITE_ALIGN
             image, original_size = load_image_bytes(image_path, args.pad_byte, write_align)
+            dry_flags = args.flags | (BOOT_FLAG_VERIFY_SIGNATURE if args.manifest_key else 0)
+            if args.manifest:
+                manifest_info = parse_manifest_header(args.manifest.read_bytes())
+                dry_flags = manifest_info["flags"]
+            if args.encrypted:
+                dry_flags |= BOOT_FLAG_ENCRYPTED_IMAGE
+                dry_flags |= BOOT_FLAG_VERIFY_SIGNATURE
+                if args.manifest_nonce == bytes(16):
+                    args.manifest_nonce = secrets.token_bytes(16)
+            if args.anti_rollback:
+                dry_flags |= BOOT_FLAG_ANTI_ROLLBACK
+                dry_flags |= BOOT_FLAG_VERIFY_SIGNATURE
+            if args.manifest_key and args.manifest_out:
+                if args.target_id is None:
+                    parser.error("--target-id is required with --dry-run --manifest-key --manifest-out")
+                manifest = build_signed_manifest(
+                    args.target_id,
+                    image,
+                    crc32(image),
+                    args.version,
+                    dry_flags,
+                    args.manifest_key_id,
+                    args.manifest_nonce,
+                    args.manifest_key,
+                )
+                args.manifest_out.write_bytes(manifest)
             print(
                 f"flash image={image_path}, original_size={original_size}, "
-                f"padded_size={len(image)}, write_align={write_align}, crc32=0x{crc32(image):08X}"
+                f"padded_size={len(image)}, write_align={write_align}, "
+                f"crc32=0x{crc32(image):08X}, flags=0x{dry_flags:08X}, "
+                f"sha256={hashlib.sha256(image).hexdigest()}"
             )
             return 0
         if args.command == "app-jump":
@@ -845,12 +1407,17 @@ def main() -> int:
             return 0
 
         if args.command == "flash":
+            flash_flags = args.flags
+            if args.encrypted:
+                flash_flags |= BOOT_FLAG_ENCRYPTED_IMAGE
+            if args.anti_rollback:
+                flash_flags |= BOOT_FLAG_ANTI_ROLLBACK
             try:
                 result = flash_image(
                     port,
                     pathlib.Path(args.image),
                     args.version,
-                    args.flags,
+                    flash_flags,
                     args.retries,
                     args.retry_interval,
                     args.open_retries,
@@ -859,6 +1426,12 @@ def main() -> int:
                     args.write_align,
                     args.begin_timeout,
                     args.commit_timeout,
+                    args.manifest,
+                    args.manifest_key,
+                    args.manifest_key_id,
+                    args.manifest_nonce,
+                    args.manifest_out,
+                    args.encrypt_key,
                 )
                 if result == 0 and args.run and args.wait_app:
                     port.close()
@@ -887,6 +1460,18 @@ def main() -> int:
             )
             if result != 0:
                 return result
+
+            if opcode == BOOT_OP_REBOOT and args.wait_bootloader:
+                port.close()
+                time.sleep(args.reconnect_delay)
+                wait_for_usb_port(
+                    args.usb_vid,
+                    args.bootloader_pid,
+                    device_serial,
+                    args.wait_timeout,
+                    "bootloader",
+                )
+                return 0
 
             if index + 1 < len(commands):
                 time.sleep(args.interval)

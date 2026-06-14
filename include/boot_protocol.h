@@ -5,9 +5,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define BOOT_PROTOCOL_VERSION      0x00010000UL
+#include "boot_image.h"
+
+#define BOOT_PROTOCOL_VERSION      0x00010003UL
 #define BOOT_FRAME_MAGIC           0x42464641UL
 #define BOOT_FRAME_MAX_PAYLOAD     512U
+#define BOOT_MANIFEST_MAGIC        0x4D464641UL
+#define BOOT_MANIFEST_VERSION      1UL
+#define BOOT_MANIFEST_SHA256_SIZE  32U
+#define BOOT_MANIFEST_NONCE_SIZE   16U
+#define BOOT_MANIFEST_SIGNATURE_SIZE 256U
 
 typedef enum
 {
@@ -19,8 +26,26 @@ typedef enum
     BOOT_OP_GET_STATUS = 0x0006U,
     BOOT_OP_BOOT_APP   = 0x0007U,
     BOOT_OP_GET_DIAG   = 0x0008U,
+    BOOT_OP_GET_METADATA = 0x0009U,
+    BOOT_OP_CLEAR_METADATA = 0x000AU,
+    BOOT_OP_REBOOT = 0x000BU,
+    BOOT_OP_VERIFY_IMAGE = 0x000CU,
+    BOOT_OP_SET_MANIFEST = 0x000DU,
     BOOT_OP_RESPONSE   = 0x8000U
 } boot_opcode_t;
+
+typedef enum
+{
+    BOOT_OPERATION_NONE = 0,
+    BOOT_OPERATION_ERASE_APP,
+    BOOT_OPERATION_ERASE_METADATA,
+    BOOT_OPERATION_WRITE_DATA,
+    BOOT_OPERATION_VERIFY_IMAGE,
+    BOOT_OPERATION_STORE_METADATA,
+    BOOT_OPERATION_CLEAR_METADATA,
+    BOOT_OPERATION_REBOOT,
+    BOOT_OPERATION_BOOT_APP
+} boot_operation_t;
 
 typedef enum
 {
@@ -36,7 +61,11 @@ typedef enum
     BOOT_ERR_FLASH,
     BOOT_ERR_IMAGE_TOO_LARGE,
     BOOT_ERR_IMAGE_CRC,
-    BOOT_ERR_NO_VALID_APP
+    BOOT_ERR_NO_VALID_APP,
+    BOOT_ERR_MANIFEST,
+    BOOT_ERR_SIGNATURE,
+    BOOT_ERR_ROLLBACK,
+    BOOT_ERR_DECRYPTION
 } boot_error_t;
 
 typedef struct
@@ -72,6 +101,22 @@ typedef struct
 
 typedef struct
 {
+    uint32_t magic;
+    uint32_t manifest_version;
+    uint32_t target_id;
+    uint32_t image_size;
+    uint32_t image_crc32;
+    uint32_t firmware_version;
+    uint32_t flags;
+    uint32_t key_id;
+    uint8_t image_sha256[BOOT_MANIFEST_SHA256_SIZE];
+    uint8_t encryption_nonce[BOOT_MANIFEST_NONCE_SIZE];
+    uint32_t reserved[7];
+    uint8_t signature[BOOT_MANIFEST_SIGNATURE_SIZE];
+} boot_manifest_t;
+
+typedef struct
+{
     uint32_t protocol_version;
     uint32_t target_id;
     uint32_t flash_size;
@@ -88,7 +133,34 @@ typedef struct
     uint32_t written_size;
     uint32_t expected_size;
     uint32_t running_crc32;
+    uint32_t operation;
+    uint32_t operation_progress;
+    uint32_t operation_total;
 } boot_status_response_t;
+
+typedef struct
+{
+    uint32_t valid;
+    uint32_t copy_count;
+    uint32_t selected_copy;
+    uint32_t app_valid;
+    uint32_t security_state_valid;
+    boot_metadata_t metadata;
+    boot_security_state_t security_state;
+} boot_metadata_response_t;
+
+typedef struct
+{
+    uint32_t result_error;
+    uint32_t metadata_valid;
+    uint32_t vector_valid;
+    uint32_t image_crc_valid;
+    uint32_t security_valid;
+    uint32_t image_size;
+    uint32_t expected_crc32;
+    uint32_t calculated_crc32;
+    uint32_t app_base;
+} boot_verify_image_response_t;
 
 typedef struct
 {

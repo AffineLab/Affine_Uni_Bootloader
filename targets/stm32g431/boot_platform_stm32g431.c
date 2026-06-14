@@ -119,6 +119,13 @@ bool boot_platform_transport_get_diag(boot_diag_response_t *out_diag)
     return boot_target_usb_transport_get_diag(&g_usb_transport, out_diag);
 }
 
+void boot_platform_watchdog_kick(void)
+{
+#if defined(IWDG)
+    IWDG->KR = 0xAAAAU;
+#endif
+}
+
 void boot_platform_flash_unlock(void)
 {
     HAL_FLASH_Unlock();
