@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build or create, for example v0.1.0"
+        required: false
+        type: string
+      create_release:
+        description: "Create or update a GitHub Release"
+        required: true
+        default: false
+        type: boolean
+      draft:
+        description: "Create the GitHub Release as a draft"
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: "Mark the GitHub Release as a prerelease"
+        required: true
+        default: false
+        type: boolean
+      require_anti_rollback:
+        description: "Require anti-rollback for every signed production update"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Select release ref
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            git checkout "${{ inputs.tag }}"
+            echo "AFFINE_RELEASE_TAG=${{ inputs.tag }}" >> "${GITHUB_ENV}"
+            echo "AFFINE_RELEASE_VERSION=${{ inputs.tag }}" >> "${GITHUB_ENV}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "AFFINE_RELEASE_TAG=${GITHUB_REF_NAME}" >> "${GITHUB_ENV}"
+            echo "AFFINE_RELEASE_VERSION=${GITHUB_REF_NAME}" >> "${GITHUB_ENV}"
+          else
+            echo "AFFINE_RELEASE_TAG=manual-${GITHUB_RUN_NUMBER}" >> "${GITHUB_ENV}"
+            echo "AFFINE_RELEASE_VERSION=manual-${GITHUB_RUN_NUMBER}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            gcc-arm-none-eabi \
+            git \
+            libnewlib-arm-none-eabi \
+            ninja-build \
+            openssl \
+            python3
+
+      - name: Prepare production release keys
+        env:
+          RELEASE_PUBLIC_KEY_PEM: ${{ secrets.AFFINE_BOOT_RELEASE_PUBLIC_KEY_PEM }}
+          RELEASE_AES128_KEY_HEX: ${{ secrets.AFFINE_BOOT_RELEASE_AES128_KEY_HEX }}
+        run: |
+          if [ -z "${RELEASE_PUBLIC_KEY_PEM}" ]; then
+            echo "Missing secret AFFINE_BOOT_RELEASE_PUBLIC_KEY_PEM" >&2
+            exit 1
+          fi
+          if [ -z "${RELEASE_AES128_KEY_HEX}" ]; then
+            echo "Missing secret AFFINE_BOOT_RELEASE_AES128_KEY_HEX" >&2
+            exit 1
+          fi
+
+          public_key_path="${RUNNER_TEMP}/affine_boot_release_public_key.pem"
+          umask 077
+          printf '%s\n' "${RELEASE_PUBLIC_KEY_PEM}" > "${public_key_path}"
+          printf 'AFFINE_BOOT_RELEASE_PUBLIC_KEY_FILE=%s\n' "${public_key_path}" >> "${GITHUB_ENV}"
+          printf 'AFFINE_BOOT_RELEASE_AES128_KEY_HEX=%s\n' "${RELEASE_AES128_KEY_HEX}" >> "${GITHUB_ENV}"
+
+      - name: Build release artifacts
+        env:
+          AFFINE_RELEASE_PRODUCTION_REQUIRE_ANTI_ROLLBACK: ${{ inputs.require_anti_rollback || 'false' }}
+        run: bash tools/release.sh
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: affine-bootloader-release-${{ env.AFFINE_RELEASE_VERSION }}
+          if-no-files-found: error
+          retention-days: 30
+          path: dist/release/*
+
+      - name: Create or update GitHub Release
+        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${AFFINE_RELEASE_TAG}"
+          release_flags=()
+          draft="true"
+          prerelease="false"
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            draft="${{ inputs.draft }}"
+            prerelease="${{ inputs.prerelease }}"
+          fi
+
+          if [ "${draft}" = "true" ]; then
+            release_flags+=(--draft)
+          fi
+          if [ "${prerelease}" = "true" ]; then
+            release_flags+=(--prerelease)
+          fi
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" dist/release/* --clobber
+          else
+            gh release create "${tag}" dist/release/* \
+              --target "${GITHUB_SHA}" \
+              --title "${tag}" \
+              --notes-file dist/release/RELEASE_NOTES.md \
+              "${release_flags[@]}"
+          fi

@@ -7,6 +7,10 @@
 #define BOOT_RSA2048_PUBLIC_EXPONENT 65537UL
 #define BOOT_AES128_KEY_SIZE 16U
 
+#ifdef AFFINE_BOOT_KEYS_OVERRIDE_HEADER
+#include AFFINE_BOOT_KEYS_OVERRIDE_HEADER
+#else
+
 /*
  * Development manifest verification key.
  *
@@ -43,5 +47,7 @@ static const uint8_t g_boot_stream_aes128_key[BOOT_AES128_KEY_SIZE] = {
     0xFB, 0xE7, 0x83, 0x2D, 0x34, 0xEF, 0x7C, 0x54,
     0x06, 0xDE, 0x5F, 0x83, 0x29, 0x51, 0x5A, 0xB9
 };
+
+#endif
 
 #endif

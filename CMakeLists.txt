@@ -6,6 +6,47 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+set(AFFINE_BOOT_ALLOW_UNSIGNED_UPDATES "1" CACHE STRING "Allow unsigned firmware updates")
+set(AFFINE_BOOT_REQUIRE_SIGNED_UPDATES "0" CACHE STRING "Require signed firmware updates and signed committed apps")
+set(AFFINE_BOOT_ALLOW_OPTIONAL_ANTI_ROLLBACK "1" CACHE STRING "Allow signed manifests to opt into anti-rollback")
+set(AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED "0" CACHE STRING "Require anti-rollback for every signed update")
+set(AFFINE_BOOT_PRESERVE_SECURITY_STATE_ON_CLEAR_METADATA "1" CACHE STRING "Preserve rollback state when clearing app metadata")
+set(AFFINE_BOOT_KEYS_HEADER "" CACHE FILEPATH "Optional generated boot key override header")
+
+function(affine_bool_define out value)
+    if("${value}")
+        set(${out} 1 PARENT_SCOPE)
+    else()
+        set(${out} 0 PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(affine_apply_boot_policy target_name)
+    affine_bool_define(_allow_unsigned "${AFFINE_BOOT_ALLOW_UNSIGNED_UPDATES}")
+    affine_bool_define(_require_signed "${AFFINE_BOOT_REQUIRE_SIGNED_UPDATES}")
+    affine_bool_define(_allow_optional_rollback "${AFFINE_BOOT_ALLOW_OPTIONAL_ANTI_ROLLBACK}")
+    affine_bool_define(_require_rollback "${AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED}")
+    affine_bool_define(_preserve_security_state "${AFFINE_BOOT_PRESERVE_SECURITY_STATE_ON_CLEAR_METADATA}")
+
+    target_compile_definitions(${target_name} PRIVATE
+        AFFINE_BOOT_ALLOW_UNSIGNED_UPDATES=${_allow_unsigned}
+        AFFINE_BOOT_REQUIRE_SIGNED_UPDATES=${_require_signed}
+        AFFINE_BOOT_ALLOW_OPTIONAL_ANTI_ROLLBACK=${_allow_optional_rollback}
+        AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED=${_require_rollback}
+        AFFINE_BOOT_PRESERVE_SECURITY_STATE_ON_CLEAR_METADATA=${_preserve_security_state}
+    )
+
+    if(AFFINE_BOOT_KEYS_HEADER)
+        get_filename_component(_boot_keys_header "${AFFINE_BOOT_KEYS_HEADER}" ABSOLUTE
+            BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(NOT EXISTS "${_boot_keys_header}")
+            message(FATAL_ERROR "AFFINE_BOOT_KEYS_HEADER does not exist: ${_boot_keys_header}")
+        endif()
+        target_compile_definitions(${target_name} PRIVATE
+            "AFFINE_BOOT_KEYS_OVERRIDE_HEADER=\"${_boot_keys_header}\"")
+    endif()
+endfunction()
+
 add_library(boot_core STATIC
     src/boot_protocol.c
     src/boot_crypto.c
@@ -19,6 +60,7 @@ target_include_directories(boot_core
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+affine_apply_boot_policy(boot_core)
 
 add_executable(bootloader_stub EXCLUDE_FROM_ALL
     src/main.c
@@ -116,6 +158,7 @@ if(AFFINE_BUILD_STM32G431)
         STM32G431xx
         USE_HAL_DRIVER
     )
+    affine_apply_boot_policy(bootloader_stm32g431)
 
     target_compile_options(bootloader_stm32g431 PRIVATE
         -mcpu=cortex-m4
@@ -232,6 +275,7 @@ if(AFFINE_BUILD_STM32H503)
         STM32H503xx
         USE_HAL_DRIVER
     )
+    affine_apply_boot_policy(bootloader_stm32h503)
 
     target_compile_options(bootloader_stm32h503 PRIVATE
         -mcpu=cortex-m33
