@@ -154,8 +154,31 @@ match = re.search(r"#define\s+BOOT_PROTOCOL_VERSION\s+(0x[0-9A-Fa-f]+|\d+)", pro
 protocol_version = match.group(1) if match else "unknown"
 
 artifacts = []
+target_identity = {
+    "stm32f072": {
+        "board": "Monica_NFC",
+        "usb_pid": "0x52B2",
+        "target_id": "0x46303732",
+        "board_id": "0x4D4F4E43",
+        "flash_layout_id": "0x46303741",
+    },
+    "stm32g431": {
+        "board": "Mai",
+        "usb_pid": "0x52B0",
+        "target_id": "0x47343331",
+        "board_id": "0x4D414931",
+        "flash_layout_id": "0x47343341",
+    },
+    "stm32h503": {
+        "board": "LinneaPro",
+        "usb_pid": "0x52B1",
+        "target_id": "0x48353033",
+        "board_id": "0x4C504835",
+        "flash_layout_id": "0x48353041",
+    },
+}
 for path in sorted(dist.glob("bootloader_*.*")):
-    match = re.match(r"bootloader_(stm32g431|stm32h503)_(unsigned|production)\.(bin|elf|map)$", path.name)
+    match = re.match(r"bootloader_(stm32f072|stm32g431|stm32h503)_(unsigned|production)\.(bin|elf|map)$", path.name)
     if not match:
         continue
     target, variant, kind = match.groups()
@@ -173,6 +196,7 @@ for path in sorted(dist.glob("bootloader_*.*")):
         "kind": kind,
         "bytes": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
+        "identity": target_identity[target],
         "policy": policy,
     })
 
@@ -203,6 +227,16 @@ for item in artifacts:
         f"{item['bytes']} | `{item['sha256']}` |"
     )
 
+identity_rows = [
+    "| Target | Board | USB PID | Target ID | Board ID | Flash Layout ID |",
+    "| --- | --- | --- | --- | --- | --- |",
+]
+for target, identity in target_identity.items():
+    identity_rows.append(
+        f"| `{target}` | `{identity['board']}` | `{identity['usb_pid']}` | "
+        f"`{identity['target_id']}` | `{identity['board_id']}` | `{identity['flash_layout_id']}` |"
+    )
+
 notes = f"""# Affine Uni Bootloader {version}
 
 Source commit: `{commit}`
@@ -220,8 +254,15 @@ Production public key: `{public_key.name}`
 - `unsigned`: allows unsigned updates and signed manifest updates. Use for development, bring-up, and recovery-friendly deployments.
 - `production`: requires signed manifest updates and rejects unsigned committed applications. Anti-rollback is {"required for every signed update" if production_require_anti else "available when requested by the signed manifest"}.
 
+## Device Identity
+
+USB product string: `Affine Uni Bootloader`
+
+{chr(10).join(identity_rows)}
+
 ## Flash Layout
 
+- STM32F072 bootloader: `0x08000000`-`0x08005FFF`; app slot starts at `0x08006000`.
 - STM32G431 bootloader: `0x08000000`-`0x08005FFF`; app slot starts at `0x08006000`.
 - STM32H503 bootloader: `0x08000000`-`0x08005FFF`; app slot starts at `0x08006000`.
 
@@ -236,9 +277,11 @@ mkdir -p "${BUILD_ROOT}" "${DIST_DIR}"
 
 production_key_header="$(prepare_production_keys)"
 
+build_target_variant stm32f072 -DAFFINE_BUILD_STM32F072 bootloader_stm32f072 unsigned 1 0 1 0
 build_target_variant stm32g431 -DAFFINE_BUILD_STM32G431 bootloader_stm32g431 unsigned 1 0 1 0
 build_target_variant stm32h503 -DAFFINE_BUILD_STM32H503 bootloader_stm32h503 unsigned 1 0 1 0
 
+build_target_variant stm32f072 -DAFFINE_BUILD_STM32F072 bootloader_stm32f072 production 0 1 1 "$(bool_value "${PRODUCTION_REQUIRE_ANTI_ROLLBACK}")" "${production_key_header}"
 build_target_variant stm32g431 -DAFFINE_BUILD_STM32G431 bootloader_stm32g431 production 0 1 1 "$(bool_value "${PRODUCTION_REQUIRE_ANTI_ROLLBACK}")" "${production_key_header}"
 build_target_variant stm32h503 -DAFFINE_BUILD_STM32H503 bootloader_stm32h503 production 0 1 1 "$(bool_value "${PRODUCTION_REQUIRE_ANTI_ROLLBACK}")" "${production_key_header}"
 

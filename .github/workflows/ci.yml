@@ -40,6 +40,7 @@ jobs:
           retention-days: 14
           path: |
             build-ci/stm32g431/bootloader_stm32g431.bin
+            build-ci/stm32f072/bootloader_stm32f072.bin
             build-ci/stm32h503/bootloader_stm32h503.bin
 
       - name: Upload debug artifacts
@@ -51,5 +52,7 @@ jobs:
           path: |
             build-ci/stm32g431/bootloader_stm32g431.elf
             build-ci/stm32g431/bootloader_stm32g431.map
+            build-ci/stm32f072/bootloader_stm32f072.elf
+            build-ci/stm32f072/bootloader_stm32f072.map
             build-ci/stm32h503/bootloader_stm32h503.elf
             build-ci/stm32h503/bootloader_stm32h503.map

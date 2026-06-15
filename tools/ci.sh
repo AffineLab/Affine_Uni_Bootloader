@@ -91,6 +91,12 @@ git diff --check -- . ':!third_party'
 run_manifest_smoke
 
 cmake_configure_build \
+    STM32F072 \
+    "${BUILD_ROOT}/stm32f072" \
+    -DAFFINE_BUILD_STM32F072 \
+    bootloader_stm32f072
+
+cmake_configure_build \
     STM32G431 \
     "${BUILD_ROOT}/stm32g431" \
     -DAFFINE_BUILD_STM32G431 \
@@ -102,6 +108,6 @@ cmake_configure_build \
     -DAFFINE_BUILD_STM32H503 \
     bootloader_stm32h503
 
+check_size STM32F072 "${BUILD_ROOT}/stm32f072/bootloader_stm32f072.bin"
 check_size STM32G431 "${BUILD_ROOT}/stm32g431/bootloader_stm32g431.bin"
 check_size STM32H503 "${BUILD_ROOT}/stm32h503/bootloader_stm32h503.bin"
-

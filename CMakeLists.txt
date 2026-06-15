@@ -77,6 +77,7 @@ target_link_libraries(bootloader_stub PRIVATE boot_core)
 
 option(AFFINE_BUILD_STM32G431 "Build STM32G431 bootloader target" OFF)
 option(AFFINE_BUILD_STM32H503 "Build STM32H503 bootloader target" OFF)
+option(AFFINE_BUILD_STM32F072 "Build STM32F072 bootloader target" OFF)
 
 set(BOOT_TARGET_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/targets/common/boot_target_common.c
@@ -203,6 +204,127 @@ if(AFFINE_BUILD_STM32G431)
                 ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
             BYPRODUCTS ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
             COMMENT "Generating bootloader_stm32g431.bin"
+        )
+    endif()
+endif()
+
+if(AFFINE_BUILD_STM32F072)
+    set(STM32F072_CUBE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stm32cube_f0")
+    set(STM32F072_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/stm32f072")
+    set(STM32F072_COMPOSITE_DIR "${STM32F072_CUBE_DIR}/Middlewares/Third_Party/AL94_USB_Composite/COMPOSITE")
+
+    affine_require_existing_path("${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver"
+        "STM32F072 HAL driver directory")
+    affine_require_existing_path("${STM32F072_CUBE_DIR}/Core/Startup/startup_stm32f072cbtx.s"
+        "STM32F072 startup file")
+    affine_require_existing_path("${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_core.c"
+        "STM32F072 USB Device middleware")
+
+    add_executable(bootloader_stm32f072
+        src/boot_protocol.c
+        src/boot_crypto.c
+        src/boot_image.c
+        src/boot_security.c
+        src/bootloader.c
+        ${BOOT_TARGET_COMMON_SOURCES}
+        ${STM32F072_TARGET_DIR}/main.c
+        ${STM32F072_TARGET_DIR}/usb.c
+        ${STM32F072_TARGET_DIR}/usbd_desc.c
+        ${STM32F072_TARGET_DIR}/usbd_cdc_acm_if.c
+        ${STM32F072_TARGET_DIR}/boot_platform_stm32f072.c
+        ${STM32F072_TARGET_DIR}/baremetal_runtime.c
+        ${STM32F072_TARGET_DIR}/stm32f0xx_it.c
+        ${STM32F072_CUBE_DIR}/Core/Src/system_stm32f0xx.c
+        ${STM32F072_CUBE_DIR}/Core/Startup/startup_stm32f072cbtx.s
+        ${STM32F072_COMPOSITE_DIR}/App/usb_device.c
+        ${STM32F072_TARGET_DIR}/usbd_conf.c
+        ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_core.c
+        ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_ctlreq.c
+        ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_ioreq.c
+        ${STM32F072_COMPOSITE_DIR}/Class/COMPOSITE/Src/usbd_composite.c
+        ${STM32F072_COMPOSITE_DIR}/Class/CDC_ACM/Src/usbd_cdc_acm.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_cortex.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_flash.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_flash_ex.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_gpio.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pcd.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pcd_ex.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pwr.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_rcc.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_rcc_ex.c
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_ll_usb.c
+    )
+
+    target_include_directories(bootloader_stm32f072 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${STM32F072_TARGET_DIR}
+        ${STM32F072_CUBE_DIR}/Core/Inc
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Inc
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Inc/Legacy
+        ${STM32F072_CUBE_DIR}/Drivers/CMSIS/Include
+        ${STM32F072_CUBE_DIR}/Drivers/CMSIS/Device/ST/STM32F0xx/Include
+        ${STM32F072_COMPOSITE_DIR}/App
+        ${STM32F072_COMPOSITE_DIR}/Target
+        ${STM32F072_COMPOSITE_DIR}/Core/Inc
+        ${STM32F072_COMPOSITE_DIR}/Class/CDC_ACM/Inc
+        ${STM32F072_COMPOSITE_DIR}/Class/COMPOSITE/Inc
+    )
+
+    target_compile_definitions(bootloader_stm32f072 PRIVATE
+        STM32F072xB
+        USE_HAL_DRIVER
+    )
+    affine_apply_boot_policy(bootloader_stm32f072)
+
+    target_compile_options(bootloader_stm32f072 PRIVATE
+        -mcpu=cortex-m0
+        -mthumb
+        -Os
+        -flto
+        -ffunction-sections
+        -fdata-sections
+        -fomit-frame-pointer
+        -fno-unwind-tables
+        -fno-asynchronous-unwind-tables
+        -Wall
+        -Wextra
+    )
+
+    set_source_files_properties(
+        ${STM32F072_TARGET_DIR}/usbd_conf.c
+        ${STM32F072_COMPOSITE_DIR}/Class/CDC_ACM/Src/usbd_cdc_acm.c
+        PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter"
+    )
+    set_source_files_properties(
+        ${STM32F072_COMPOSITE_DIR}/Class/COMPOSITE/Src/usbd_composite.c
+        PROPERTIES COMPILE_OPTIONS "-w"
+    )
+    set_source_files_properties(
+        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pwr.c
+        PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter"
+    )
+
+    target_link_options(bootloader_stm32f072 PRIVATE
+        -mcpu=cortex-m0
+        -mthumb
+        -flto
+        -nostartfiles
+        --specs=nano.specs
+        --specs=nosys.specs
+        -T${STM32F072_TARGET_DIR}/STM32F072CBTX_BOOTLOADER.ld
+        -Wl,--gc-sections
+        -Wl,-Map=${CMAKE_BINARY_DIR}/bootloader_stm32f072.map
+    )
+
+    if(CMAKE_OBJCOPY)
+        add_custom_command(TARGET bootloader_stm32f072 POST_BUILD
+            COMMAND ${CMAKE_OBJCOPY} -O binary
+                $<TARGET_FILE:bootloader_stm32f072>
+                ${CMAKE_BINARY_DIR}/bootloader_stm32f072.bin
+            BYPRODUCTS ${CMAKE_BINARY_DIR}/bootloader_stm32f072.bin
+            COMMENT "Generating bootloader_stm32f072.bin"
         )
     endif()
 endif()
