@@ -25,9 +25,9 @@ Firmware-side IDs are defined in [include/boot_target_ids.h](include/boot_target
 
 | Target | Board | USB PID | `target_id` | `board_id` | `flash_layout_id` |
 | --- | --- | --- | --- | --- | --- |
-| `STM32F072` | `Monica_NFC` | `0x52B2` | `0x46303732` | `0x4D4F4E43` | `0x46303741` |
-| `STM32G431` | `Mai` | `0x52B0` | `0x47343331` | `0x4D414931` | `0x47343341` |
-| `STM32H503` | `LinneaPro` | `0x52B1` | `0x48353033` | `0x4C504835` | `0x48353041` |
+| `STM32F072` | `Monica` | `0x52B2` | `0x46303732` | `0x4D4F4E43` | `0x46303741` |
+| `STM32G431` | `Curva` | `0x52B0` | `0x47343331` | `0x4D414931` | `0x47343341` |
+| `STM32H503` | `Linnea` | `0x52B1` | `0x48353033` | `0x4C504835` | `0x48353041` |
 
 ## Repository Layout
 
