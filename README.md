@@ -12,11 +12,22 @@ The project is intended for STM32-based devices that need a compact firmware upd
 
 | Target | Status |
 | --- | --- |
+| `STM32F072` | Platform layer, USB CDC transport, linker scripts, and CMake target are present. |
 | `STM32G431` | Platform layer, USB CDC transport, linker scripts, and CMake target are present. |
 | `STM32H503` | Platform layer, USB CDC transport, linker scripts, and CMake target are present. |
-| `STM32F072` | Memory layout template only. |
 | `STM32F401` | Memory layout template only. |
 | `stub` | Minimal host/stub platform for core bring-up. |
+
+## Device Identity
+
+USB product strings are intentionally shared as `Affine Uni Bootloader`. Board and layout compatibility is reported by protocol instead of product text. `GET_DEVICE_INFO` returns the MCU target ID, board ID, board revision, flash layout ID, memory layout, write alignment, and security capabilities.
+Firmware-side IDs are defined in [include/boot_target_ids.h](include/boot_target_ids.h).
+
+| Target | Board | USB PID | `target_id` | `board_id` | `flash_layout_id` |
+| --- | --- | --- | --- | --- | --- |
+| `STM32F072` | `Monica_NFC` | `0x52B2` | `0x46303732` | `0x4D4F4E43` | `0x46303741` |
+| `STM32G431` | `Mai` | `0x52B0` | `0x47343331` | `0x4D414931` | `0x47343341` |
+| `STM32H503` | `LinneaPro` | `0x52B1` | `0x48353033` | `0x4C504835` | `0x48353041` |
 
 ## Repository Layout
 
@@ -37,7 +48,8 @@ The transport is a USB CDC byte stream. The bootloader protocol adds its own fix
 Main commands:
 
 - `HELLO`: query protocol version, target ID, application base address, slot size, and maximum chunk size.
-- `BEGIN`: start a firmware download session and erase the application pages covered by the image.
+- `GET_DEVICE_INFO`: query formal target, board, flash layout, memory geometry, write alignment, and capability fields.
+- `BEGIN`: start a firmware download session for a specific target, board, and flash layout, then erase the application pages covered by the image.
 - `DATA`: write one aligned firmware chunk at the next expected offset.
 - `COMMIT`: verify the received image, read back flash CRC, and write committed metadata.
 - `ABORT`: cancel the active session.
@@ -60,10 +72,13 @@ Applications remain standard bare-metal images:
 
 The bootloader stores CRC-protected image metadata in a separate flash region near the end of the application slot. Targets with enough reserved metadata space keep two erase-unit metadata copies and use a valid copy on boot. On boot, the bootloader validates metadata, vector table addresses, and image CRC before jumping to the application.
 
+STM32F072 is a Cortex-M0 target and has no VTOR register. Its bootloader copies the application vector table to the first `0xC0` bytes of SRAM and remaps SRAM at address zero before jumping, so STM32F072 applications must reserve `0x20000000`-`0x200000BF`. The provided `targets/stm32f072/STM32F072CBTX_APP.ld` starts application RAM at `0x200000C0`.
+
 Supported targets reserve 24 KiB for the bootloader:
 
 | Target | Bootloader | Application slot | Metadata |
 | --- | --- | --- | --- |
+| `STM32F072` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801F7FF` (102 KiB) | `0x0801F800`-`0x0801FFFF` |
 | `STM32G431` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801DFFF` (96 KiB) | `0x0801E000`-`0x0801FFFF` |
 | `STM32H503` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`-`0x0801FFFF` |
 
@@ -79,7 +94,7 @@ Security flags:
 | `BOOT_FLAG_ENCRYPTED_IMAGE` | Treat incoming `DATA` chunks as AES-128 CTR ciphertext. This flag also requires a signed manifest. |
 | `BOOT_FLAG_ANTI_ROLLBACK` | Request rollback-floor enforcement for this signed update. |
 
-Signed manifest updates use `SET_MANIFEST` after `BEGIN` and before the first `DATA` frame. The manifest includes target ID, image size, CRC32, firmware version, flags, key ID, SHA-256 of the plaintext image, AES-CTR nonce, and an RSA-2048 PKCS#1 v1.5/SHA-256 signature. The bootloader stores the signed manifest fields in metadata and verifies the signature and SHA-256 again before booting an application.
+Signed manifest updates use `SET_MANIFEST` after `BEGIN` and before the first `DATA` frame. The manifest includes target ID, board ID, flash layout ID, image size, CRC32, firmware version, flags, key ID, SHA-256 of the plaintext image, AES-CTR nonce, and an RSA-2048 PKCS#1 v1.5/SHA-256 signature. The bootloader stores the signed manifest fields in metadata and verifies the signature, board/layout compatibility, and SHA-256 again before booting an application.
 
 Unsigned development updates and signed secure updates can coexist. The default build allows unsigned updates so development and factory recovery remain simple. Production builds can change this policy with compile-time macros in [include/boot_policy.h](include/boot_policy.h):
 
@@ -107,6 +122,7 @@ Vendored third-party source layout:
 
 | Path | Purpose |
 | --- | --- |
+| `third_party/stm32cube_f0` | STM32F072 HAL/CMSIS/startup plus USB Device middleware files used by the F072 build. |
 | `third_party/stm32cube_g4` | STM32G431 HAL/CMSIS/startup plus USB Device middleware files used by the G431 build. |
 | `third_party/stm32cube_h5` | STM32H503 HAL/CMSIS/startup plus USB Device middleware files used by the H503 build. |
 
@@ -131,6 +147,17 @@ cmake -S . -B build-stm32h503 `
 ninja -C build-stm32h503 bootloader_stm32h503
 ```
 
+Example STM32F072 build:
+
+```powershell
+cmake -S . -B build-stm32f072 `
+  -G Ninja `
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake `
+  -DAFFINE_BUILD_STM32F072=ON
+
+ninja -C build-stm32f072 bootloader_stm32f072
+```
+
 Example STM32G431 build:
 
 ```powershell
@@ -148,6 +175,7 @@ ninja -C build-stm32g431 bootloader_stm32g431
 
 ```powershell
 py tools\boot_test.py COM5 hello
+py tools\boot_test.py COM5 device-info
 py tools\boot_test.py COM5 status
 py tools\boot_test.py COM5 metadata
 py tools\boot_test.py COM5 verify-image
@@ -166,6 +194,8 @@ Offline manifest generation for the G431 target:
 py tools\boot_test.py COM0 flash firmware.bin `
   --dry-run `
   --target-id 0x47343331 `
+  --board-id 0x4D414931 `
+  --flash-layout-id 0x47343341 `
   --manifest-key release_rsa.pem `
   --manifest-out firmware.manifest
 ```
