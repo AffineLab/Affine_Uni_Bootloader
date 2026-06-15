@@ -37,7 +37,7 @@ def require_pyserial() -> None:
 
 
 BOOT_FRAME_MAGIC = 0x42464641
-BOOT_PROTOCOL_VERSION = 0x00010003
+BOOT_PROTOCOL_VERSION = 0x00010004
 
 BOOT_OP_HELLO = 0x0001
 BOOT_OP_BEGIN = 0x0002
@@ -52,12 +52,14 @@ BOOT_OP_CLEAR_METADATA = 0x000A
 BOOT_OP_REBOOT = 0x000B
 BOOT_OP_VERIFY_IMAGE = 0x000C
 BOOT_OP_SET_MANIFEST = 0x000D
+BOOT_OP_GET_DEVICE_INFO = 0x000E
 BOOT_OP_RESPONSE = 0x8000
 
 BOOT_FRAME_MAX_PAYLOAD = 512
 BOOT_MANIFEST_MAGIC = 0x4D464641
-BOOT_MANIFEST_VERSION = 1
+BOOT_MANIFEST_VERSION = 2
 BOOT_MANIFEST_SIZE = 364
+BOOT_MANIFEST_NONCE_OFFSET = 72
 BOOT_DATA_PREFIX_SIZE = 8
 BOOT_DEFAULT_WRITE_ALIGN = 8
 BOOT_FLAG_VERIFY_SIGNATURE = 1 << 0
@@ -82,6 +84,30 @@ APP_CMD_JUMP_TO_BOOTLOADER = 0x25
 DEFAULT_USB_VID = 0xAFF1
 DEFAULT_G431_BOOTLOADER_PID = 0x52B0
 DEFAULT_APP_PID = 0x52A6
+
+TARGET_DEFAULTS = {
+    0x46303732: {
+        "name": "stm32f072/monica_nfc",
+        "board_id": 0x4D4F4E43,
+        "flash_layout_id": 0x46303741,
+        "bootloader_pid": 0x52B2,
+        "write_align": 2,
+    },
+    0x47343331: {
+        "name": "stm32g431/mai",
+        "board_id": 0x4D414931,
+        "flash_layout_id": 0x47343341,
+        "bootloader_pid": 0x52B0,
+        "write_align": 8,
+    },
+    0x48353033: {
+        "name": "stm32h503/linneapro",
+        "board_id": 0x4C504835,
+        "flash_layout_id": 0x48353041,
+        "bootloader_pid": 0x52B1,
+        "write_align": 16,
+    },
+}
 
 BOOT_STATUS_NAMES = {
     0: "IDLE",
@@ -193,6 +219,8 @@ def sign_manifest_payload(signed_region: bytes, private_key: pathlib.Path) -> by
 
 def build_signed_manifest(
     target_id: int,
+    board_id: int,
+    flash_layout_id: int,
     image: bytes,
     image_crc: int,
     version: int,
@@ -202,10 +230,12 @@ def build_signed_manifest(
     private_key: pathlib.Path,
 ) -> bytes:
     signed_region = struct.pack(
-        "<8I32s16s7I",
+        "<10I32s16s5I",
         BOOT_MANIFEST_MAGIC,
         BOOT_MANIFEST_VERSION,
         target_id,
+        board_id,
+        flash_layout_id,
         len(image),
         image_crc,
         version,
@@ -213,8 +243,6 @@ def build_signed_manifest(
         key_id,
         hashlib.sha256(image).digest(),
         nonce,
-        0,
-        0,
         0,
         0,
         0,
@@ -235,16 +263,20 @@ def parse_manifest_header(manifest: bytes) -> dict[str, int]:
         magic,
         manifest_version,
         target_id,
+        board_id,
+        flash_layout_id,
         image_size,
         image_crc32,
         firmware_version,
         flags,
         key_id,
-    ) = struct.unpack_from("<8I", manifest, 0)
+    ) = struct.unpack_from("<10I", manifest, 0)
     return {
         "magic": magic,
         "manifest_version": manifest_version,
         "target_id": target_id,
+        "board_id": board_id,
+        "flash_layout_id": flash_layout_id,
         "image_size": image_size,
         "image_crc32": image_crc32,
         "firmware_version": firmware_version,
@@ -441,6 +473,47 @@ def decode_hello(payload: bytes) -> str:
     )
 
 
+def parse_device_info_fields(payload: bytes) -> tuple[int, int, int, int, int, int, int, int, int, int, int, int, int, int]:
+    if len(payload) != 56:
+        raise ValueError(f"unexpected DEVICE_INFO payload length: {len(payload)}")
+    return struct.unpack("<14I", payload)
+
+
+def decode_device_info(payload: bytes) -> str:
+    (
+        protocol_version,
+        target_id,
+        board_id,
+        board_revision,
+        flash_layout_id,
+        flash_base,
+        flash_size,
+        app_base,
+        metadata_base,
+        metadata_size,
+        erase_size,
+        write_size,
+        max_chunk_size,
+        capabilities,
+    ) = parse_device_info_fields(payload)
+    return (
+        f"protocol=0x{protocol_version:08X}, "
+        f"target=0x{target_id:08X}, "
+        f"board=0x{board_id:08X}, "
+        f"board_revision={board_revision}, "
+        f"layout=0x{flash_layout_id:08X}, "
+        f"flash_base=0x{flash_base:08X}, "
+        f"flash_size={flash_size}, "
+        f"app_base=0x{app_base:08X}, "
+        f"metadata_base=0x{metadata_base:08X}, "
+        f"metadata_size=0x{metadata_size:08X}, "
+        f"erase_size={erase_size}, "
+        f"write_size={write_size}, "
+        f"max_chunk_size={max_chunk_size}, "
+        f"capabilities=0x{capabilities:08X}({format_bit_names(capabilities, BOOT_CAP_NAMES)})"
+    )
+
+
 def decode_status(payload: bytes) -> str:
     (
         status,
@@ -503,6 +576,8 @@ def decode_metadata(payload: bytes) -> str:
             app_valid,
             magic,
             target_id,
+            board_id,
+            flash_layout_id,
             version,
             image_size,
             image_crc32,
@@ -511,8 +586,6 @@ def decode_metadata(payload: bytes) -> str:
             metadata_crc32,
             key_id,
             reserved0,
-            reserved1,
-            reserved2,
             image_sha256,
             nonce,
             signature,
@@ -526,6 +599,8 @@ def decode_metadata(payload: bytes) -> str:
             f"app_vector_valid={app_valid}, "
             f"magic=0x{magic:08X}, "
             f"target=0x{target_id:08X}, "
+            f"board=0x{board_id:08X}, "
+            f"layout=0x{flash_layout_id:08X}, "
             f"version={version}, "
             f"image_size={image_size}, "
             f"image_crc32=0x{image_crc32:08X}, "
@@ -549,6 +624,8 @@ def decode_metadata(payload: bytes) -> str:
         security_state_valid,
         magic,
         target_id,
+        board_id,
+        flash_layout_id,
         version,
         image_size,
         image_crc32,
@@ -557,18 +634,16 @@ def decode_metadata(payload: bytes) -> str:
         metadata_crc32,
         key_id,
         reserved0,
-        reserved1,
-        reserved2,
         image_sha256,
         nonce,
         signature,
         state_magic,
         state_format_version,
         state_target_id,
+        state_board_id,
+        state_flash_layout_id,
         rollback_floor_version,
         state_flags,
-        state_reserved0,
-        state_reserved1,
         state_crc32,
     ) = struct.unpack("<17I32s16s256s8I", payload)
     selected = "none" if selected_copy == 0xFFFFFFFF else str(selected_copy)
@@ -581,6 +656,8 @@ def decode_metadata(payload: bytes) -> str:
         f"security_state_valid={security_state_valid}, "
         f"magic=0x{magic:08X}, "
         f"target=0x{target_id:08X}, "
+        f"board=0x{board_id:08X}, "
+        f"layout=0x{flash_layout_id:08X}, "
         f"version={version}, "
         f"image_size={image_size}, "
         f"image_crc32=0x{image_crc32:08X}, "
@@ -591,6 +668,9 @@ def decode_metadata(payload: bytes) -> str:
         f"image_sha256={image_sha256.hex()}, "
         f"nonce={nonce.hex()}, "
         f"signature_present={int(any(signature))}, "
+        f"security_state_target=0x{state_target_id:08X}, "
+        f"security_state_board=0x{state_board_id:08X}, "
+        f"security_state_layout=0x{state_flash_layout_id:08X}, "
         f"rollback_floor_version={rollback_floor_version}, "
         f"security_state_flags=0x{state_flags:08X}, "
         f"security_state_crc32=0x{state_crc32:08X}"
@@ -848,9 +928,22 @@ def reconnect_after_exception(
 
 
 def target_default_write_align(target_id: int) -> int:
-    if target_id == 0x48353033:
-        return 16
-    return BOOT_DEFAULT_WRITE_ALIGN
+    return TARGET_DEFAULTS.get(target_id, {}).get("write_align", BOOT_DEFAULT_WRITE_ALIGN)
+
+
+def target_default_board_id(target_id: int) -> int | None:
+    value = TARGET_DEFAULTS.get(target_id, {}).get("board_id")
+    return int(value) if value is not None else None
+
+
+def target_default_flash_layout_id(target_id: int) -> int | None:
+    value = TARGET_DEFAULTS.get(target_id, {}).get("flash_layout_id")
+    return int(value) if value is not None else None
+
+
+def target_default_bootloader_pid(target_id: int) -> int | None:
+    value = TARGET_DEFAULTS.get(target_id, {}).get("bootloader_pid")
+    return int(value) if value is not None else None
 
 
 def load_image_bytes(path: pathlib.Path, pad_byte: int, write_align: int) -> tuple[bytes, int]:
@@ -891,6 +984,8 @@ def flash_image(
     manifest_nonce: bytes,
     manifest_out: pathlib.Path | None,
     encrypt_key: bytes | None,
+    expected_board_id: int | None,
+    expected_flash_layout_id: int | None,
 ) -> int:
     sequence = 1
 
@@ -905,8 +1000,71 @@ def flash_image(
     )
     protocol_version, target_id, _, app_base, slot_size, max_chunk_size, _ = parse_hello_fields(hello_payload)
     sequence += 1
+    if protocol_version != BOOT_PROTOCOL_VERSION:
+        raise RuntimeError(
+            f"protocol mismatch: device=0x{protocol_version:08X}, host=0x{BOOT_PROTOCOL_VERSION:08X}"
+        )
+
+    _, device_info_payload = send_frame_and_read(
+        port,
+        BOOT_OP_GET_DEVICE_INFO,
+        sequence,
+        b"",
+        retries,
+        retry_interval,
+        label="DEVICE_INFO",
+    )
+    (
+        device_protocol_version,
+        info_target_id,
+        board_id,
+        board_revision,
+        flash_layout_id,
+        _flash_base,
+        _flash_size,
+        info_app_base,
+        _metadata_base,
+        _metadata_size,
+        _erase_size,
+        info_write_size,
+        info_max_chunk_size,
+        _capabilities,
+    ) = parse_device_info_fields(device_info_payload)
+    sequence += 1
+
+    if device_protocol_version != protocol_version:
+        raise RuntimeError(
+            f"device info protocol mismatch: hello=0x{protocol_version:08X}, "
+            f"device-info=0x{device_protocol_version:08X}"
+        )
+    if info_target_id != target_id:
+        raise RuntimeError(
+            f"device info target mismatch: hello=0x{target_id:08X}, "
+            f"device-info=0x{info_target_id:08X}"
+        )
+    if info_app_base != app_base:
+        raise RuntimeError(
+            f"device info app base mismatch: hello=0x{app_base:08X}, "
+            f"device-info=0x{info_app_base:08X}"
+        )
+    if info_max_chunk_size != max_chunk_size:
+        raise RuntimeError(
+            f"device info max chunk mismatch: hello={max_chunk_size}, "
+            f"device-info={info_max_chunk_size}"
+        )
+    if expected_board_id is not None and expected_board_id != board_id:
+        raise RuntimeError(
+            f"device board mismatch: expected=0x{expected_board_id:08X}, "
+            f"device=0x{board_id:08X}"
+        )
+    if expected_flash_layout_id is not None and expected_flash_layout_id != flash_layout_id:
+        raise RuntimeError(
+            f"device flash layout mismatch: expected=0x{expected_flash_layout_id:08X}, "
+            f"device=0x{flash_layout_id:08X}"
+        )
+
     if write_align == 0:
-        write_align = target_default_write_align(target_id)
+        write_align = info_write_size or target_default_write_align(target_id)
     image, original_size = load_image_bytes(image_path, pad_byte, write_align)
     if manifest_key is not None:
         flags |= BOOT_FLAG_VERIFY_SIGNATURE
@@ -916,11 +1074,6 @@ def flash_image(
             manifest_nonce = secrets.token_bytes(16)
     if (flags & BOOT_FLAG_ANTI_ROLLBACK) != 0:
         flags |= BOOT_FLAG_VERIFY_SIGNATURE
-
-    if protocol_version != BOOT_PROTOCOL_VERSION:
-        raise RuntimeError(
-            f"protocol mismatch: device=0x{protocol_version:08X}, host=0x{BOOT_PROTOCOL_VERSION:08X}"
-        )
 
     if len(image) > slot_size:
         raise RuntimeError(
@@ -947,6 +1100,16 @@ def flash_image(
                 f"manifest target mismatch: manifest=0x{manifest_info['target_id']:08X}, "
                 f"device=0x{target_id:08X}"
             )
+        if manifest_info["board_id"] != board_id:
+            raise RuntimeError(
+                f"manifest board mismatch: manifest=0x{manifest_info['board_id']:08X}, "
+                f"device=0x{board_id:08X}"
+            )
+        if manifest_info["flash_layout_id"] != flash_layout_id:
+            raise RuntimeError(
+                f"manifest flash layout mismatch: manifest=0x{manifest_info['flash_layout_id']:08X}, "
+                f"device=0x{flash_layout_id:08X}"
+            )
         if manifest_info["image_size"] != len(image):
             raise RuntimeError(
                 f"manifest image size mismatch: manifest={manifest_info['image_size']}, "
@@ -970,10 +1133,12 @@ def flash_image(
                 f"manifest flags mismatch: manifest=0x{manifest_flags:08X}, requested=0x{flags:08X}"
             )
         flags = manifest_flags
-        manifest_nonce = manifest_payload[64:80]
+        manifest_nonce = manifest_payload[BOOT_MANIFEST_NONCE_OFFSET:BOOT_MANIFEST_NONCE_OFFSET + 16]
     elif manifest_key is not None:
         manifest_payload = build_signed_manifest(
             target_id,
+            board_id,
+            flash_layout_id,
             image,
             image_crc,
             version,
@@ -993,10 +1158,21 @@ def flash_image(
     print(
         f"image={image_path.name}, original_size={original_size}, padded_size={len(image)}, "
         f"crc32=0x{image_crc:08X}, app_base=0x{app_base:08X}, "
+        f"target=0x{target_id:08X}, board=0x{board_id:08X}, "
+        f"board_revision={board_revision}, layout=0x{flash_layout_id:08X}, "
         f"write_align={write_align}, chunk={usable_chunk}"
     )
 
-    begin_payload = struct.pack("<5I", target_id, len(image), image_crc, version, flags)
+    begin_payload = struct.pack(
+        "<7I",
+        target_id,
+        board_id,
+        flash_layout_id,
+        len(image),
+        image_crc,
+        version,
+        flags,
+    )
     try:
         _, begin_rsp = send_frame_and_read(
             port,
@@ -1179,6 +1355,8 @@ def send_command(
 
         if opcode == BOOT_OP_HELLO:
             print(decode_hello(rx_payload))
+        elif opcode == BOOT_OP_GET_DEVICE_INFO:
+            print(decode_device_info(rx_payload))
         elif opcode == BOOT_OP_GET_STATUS:
             print(decode_status(rx_payload))
         elif opcode == BOOT_OP_GET_DIAG:
@@ -1205,6 +1383,7 @@ def main() -> int:
         choices=[
             "hello",
             "status",
+            "device-info",
             "diag",
             "metadata",
             "clear-metadata",
@@ -1225,6 +1404,8 @@ def main() -> int:
     parser.add_argument("--open-retries", type=int, default=10, help="serial open retry count")
     parser.add_argument("--version", type=lambda value: int(value, 0), default=1, help="firmware version for BEGIN")
     parser.add_argument("--target-id", type=lambda value: int(value, 0), help="target ID for offline manifest dry-run generation")
+    parser.add_argument("--board-id", type=lambda value: int(value, 0), help="expected or offline board ID")
+    parser.add_argument("--flash-layout-id", type=lambda value: int(value, 0), help="expected or offline flash layout ID")
     parser.add_argument("--flags", type=lambda value: int(value, 0), default=0, help="security flags for BEGIN")
     parser.add_argument("--manifest", type=pathlib.Path, help="prebuilt signed manifest to send before DATA")
     parser.add_argument("--manifest-key", type=pathlib.Path, help="RSA-2048 private key used to sign a manifest")
@@ -1264,8 +1445,7 @@ def main() -> int:
     parser.add_argument(
         "--bootloader-pid",
         type=parse_int_auto,
-        default=DEFAULT_G431_BOOTLOADER_PID,
-        help="bootloader USB PID used for wait matching",
+        help="bootloader USB PID used for wait matching; defaults from --target-id or G431",
     )
     parser.add_argument("--app-pid", type=parse_int_auto, default=DEFAULT_APP_PID, help="application USB PID used for wait matching")
     parser.add_argument(
@@ -1279,11 +1459,16 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="build and print frames without opening the port")
     args = parser.parse_args()
 
+    if args.bootloader_pid is None:
+        args.bootloader_pid = target_default_bootloader_pid(args.target_id or 0) or DEFAULT_G431_BOOTLOADER_PID
+
     commands = []
     if args.command == "hello":
         commands.append((BOOT_OP_HELLO, 1, b""))
     elif args.command == "status":
         commands.append((BOOT_OP_GET_STATUS, 2, b""))
+    elif args.command == "device-info":
+        commands.append((BOOT_OP_GET_DEVICE_INFO, 2, b""))
     elif args.command == "diag":
         commands.append((BOOT_OP_GET_DIAG, 3, b""))
     elif args.command == "metadata":
@@ -1296,8 +1481,9 @@ def main() -> int:
         commands.append((BOOT_OP_VERIFY_IMAGE, 7, b""))
     elif args.command == "probe":
         commands.append((BOOT_OP_HELLO, 1, b""))
-        commands.append((BOOT_OP_GET_STATUS, 2, b""))
-        commands.append((BOOT_OP_GET_METADATA, 3, b""))
+        commands.append((BOOT_OP_GET_DEVICE_INFO, 2, b""))
+        commands.append((BOOT_OP_GET_STATUS, 3, b""))
+        commands.append((BOOT_OP_GET_METADATA, 4, b""))
     elif args.command == "app-jump":
         pass
     else:
@@ -1307,7 +1493,7 @@ def main() -> int:
     if args.dry_run:
         if args.command == "flash":
             image_path = pathlib.Path(args.image)
-            write_align = args.write_align or BOOT_DEFAULT_WRITE_ALIGN
+            write_align = args.write_align or target_default_write_align(args.target_id or 0)
             image, original_size = load_image_bytes(image_path, args.pad_byte, write_align)
             dry_flags = args.flags | (BOOT_FLAG_VERIFY_SIGNATURE if args.manifest_key else 0)
             if args.manifest:
@@ -1324,8 +1510,20 @@ def main() -> int:
             if args.manifest_key and args.manifest_out:
                 if args.target_id is None:
                     parser.error("--target-id is required with --dry-run --manifest-key --manifest-out")
+                board_id = args.board_id
+                if board_id is None:
+                    board_id = target_default_board_id(args.target_id)
+                if board_id is None:
+                    parser.error("--board-id is required for unknown --target-id")
+                flash_layout_id = args.flash_layout_id
+                if flash_layout_id is None:
+                    flash_layout_id = target_default_flash_layout_id(args.target_id)
+                if flash_layout_id is None:
+                    parser.error("--flash-layout-id is required for unknown --target-id")
                 manifest = build_signed_manifest(
                     args.target_id,
+                    board_id,
+                    flash_layout_id,
                     image,
                     crc32(image),
                     args.version,
@@ -1339,6 +1537,9 @@ def main() -> int:
                 f"flash image={image_path}, original_size={original_size}, "
                 f"padded_size={len(image)}, write_align={write_align}, "
                 f"crc32=0x{crc32(image):08X}, flags=0x{dry_flags:08X}, "
+                f"target=0x{args.target_id or 0:08X}, "
+                f"board=0x{(args.board_id if args.board_id is not None else target_default_board_id(args.target_id or 0) or 0):08X}, "
+                f"layout=0x{(args.flash_layout_id if args.flash_layout_id is not None else target_default_flash_layout_id(args.target_id or 0) or 0):08X}, "
                 f"sha256={hashlib.sha256(image).hexdigest()}"
             )
             return 0
@@ -1432,6 +1633,8 @@ def main() -> int:
                     args.manifest_nonce,
                     args.manifest_out,
                     args.encrypt_key,
+                    args.board_id,
+                    args.flash_layout_id,
                 )
                 if result == 0 and args.run and args.wait_app:
                     port.close()

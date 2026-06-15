@@ -48,6 +48,8 @@ static void boot_security_manifest_from_metadata(const boot_metadata_t *metadata
     manifest->magic = BOOT_MANIFEST_MAGIC;
     manifest->manifest_version = BOOT_MANIFEST_VERSION;
     manifest->target_id = metadata->target_id;
+    manifest->board_id = metadata->board_id;
+    manifest->flash_layout_id = metadata->flash_layout_id;
     manifest->image_size = metadata->image_size;
     manifest->image_crc32 = metadata->image_crc32;
     manifest->firmware_version = metadata->version;
@@ -143,6 +145,8 @@ boot_error_t boot_security_set_manifest(const boot_manifest_t *manifest)
     }
 
     if ((manifest->target_id != g_security.begin.target_id) ||
+        (manifest->board_id != g_security.begin.board_id) ||
+        (manifest->flash_layout_id != g_security.begin.flash_layout_id) ||
         (manifest->image_size != g_security.begin.image_size) ||
         (manifest->image_crc32 != g_security.begin.expected_crc32) ||
         (manifest->firmware_version != g_security.begin.version) ||

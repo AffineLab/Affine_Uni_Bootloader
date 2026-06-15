@@ -67,6 +67,8 @@ void boot_security_state_prepare(const boot_target_config_t *cfg,
     state->magic = BOOT_SECURITY_STATE_MAGIC;
     state->format_version = BOOT_SECURITY_STATE_VERSION;
     state->target_id = cfg->target_id;
+    state->board_id = cfg->board_id;
+    state->flash_layout_id = cfg->flash_layout_id;
     state->rollback_floor_version = rollback_floor_version;
     state->flags = BOOT_SECURITY_STATE_FLAG_ROLLBACK_FLOOR_VALID;
     boot_security_state_update_crc(state);
@@ -113,6 +115,16 @@ bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata
     }
 
     if (metadata->target_id != cfg->target_id)
+    {
+        return false;
+    }
+
+    if (metadata->board_id != cfg->board_id)
+    {
+        return false;
+    }
+
+    if (metadata->flash_layout_id != cfg->flash_layout_id)
     {
         return false;
     }
@@ -179,6 +191,16 @@ bool boot_security_state_is_valid(const boot_target_config_t *cfg, const boot_se
     }
 
     if (state->target_id != cfg->target_id)
+    {
+        return false;
+    }
+
+    if (state->board_id != cfg->board_id)
+    {
+        return false;
+    }
+
+    if (state->flash_layout_id != cfg->flash_layout_id)
     {
         return false;
     }

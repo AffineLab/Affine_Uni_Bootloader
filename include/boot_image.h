@@ -16,6 +16,8 @@ typedef struct
 {
     uint32_t magic;
     uint32_t target_id;
+    uint32_t board_id;
+    uint32_t flash_layout_id;
     uint32_t version;
     uint32_t image_size;
     uint32_t image_crc32;
@@ -23,7 +25,7 @@ typedef struct
     uint32_t flags;
     uint32_t metadata_crc32;
     uint32_t key_id;
-    uint32_t security_reserved[3];
+    uint32_t security_reserved[1];
     uint8_t image_sha256[32];
     uint8_t encryption_nonce[16];
     uint8_t manifest_signature[256];
@@ -34,9 +36,10 @@ typedef struct
     uint32_t magic;
     uint32_t format_version;
     uint32_t target_id;
+    uint32_t board_id;
+    uint32_t flash_layout_id;
     uint32_t rollback_floor_version;
     uint32_t flags;
-    uint32_t reserved[2];
     uint32_t state_crc32;
 } boot_security_state_t;
 
@@ -64,6 +67,9 @@ typedef struct
     uint32_t write_size;
     uint32_t max_chunk_size;
     uint32_t target_id;
+    uint32_t board_id;
+    uint32_t board_revision;
+    uint32_t flash_layout_id;
 } boot_target_config_t;
 
 static inline uint32_t boot_metadata_copy_count(const boot_target_config_t *cfg)

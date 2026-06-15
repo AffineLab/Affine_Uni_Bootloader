@@ -2,8 +2,7 @@
 #define AFFINE_TARGET_STM32F401_H
 
 #include "boot_image.h"
-
-#define TARGET_ID_STM32F401  0x46343031UL
+#include "boot_target_ids.h"
 
 static const boot_target_config_t g_target_config = {
     .flash_base = 0x08000000UL,
@@ -16,7 +15,10 @@ static const boot_target_config_t g_target_config = {
     .erase_size = 0x4000UL,
     .write_size = 4UL,
     .max_chunk_size = 256UL,
-    .target_id = TARGET_ID_STM32F401
+    .target_id = BOOT_TARGET_ID_STM32F401,
+    .board_id = BOOT_BOARD_ID_F401_REF,
+    .board_revision = 1UL,
+    .flash_layout_id = BOOT_LAYOUT_ID_F401_A
 };
 
 #endif

@@ -7,7 +7,7 @@
 #define USBD_PID                      0x52B1U
 #define USBD_LANGID_STRING            1033U
 #define USBD_MANUFACTURER_STRING      "AffineLab"
-#define USBD_PRODUCT_STRING           "Affine Uni Bootloader H503"
+#define USBD_PRODUCT_STRING           "Affine Uni Bootloader"
 #define USBD_CONFIGURATION_STRING     "Bootloader CDC"
 #define USBD_INTERFACE_STRING         "CDC Interface"
 

@@ -7,14 +7,15 @@
 
 #include "boot_image.h"
 
-#define BOOT_PROTOCOL_VERSION      0x00010003UL
+#define BOOT_PROTOCOL_VERSION      0x00010004UL
 #define BOOT_FRAME_MAGIC           0x42464641UL
 #define BOOT_FRAME_MAX_PAYLOAD     512U
 #define BOOT_MANIFEST_MAGIC        0x4D464641UL
-#define BOOT_MANIFEST_VERSION      1UL
+#define BOOT_MANIFEST_VERSION      2UL
 #define BOOT_MANIFEST_SHA256_SIZE  32U
 #define BOOT_MANIFEST_NONCE_SIZE   16U
 #define BOOT_MANIFEST_SIGNATURE_SIZE 256U
+#define BOOT_MANIFEST_SIZE         364U
 
 typedef enum
 {
@@ -31,6 +32,7 @@ typedef enum
     BOOT_OP_REBOOT = 0x000BU,
     BOOT_OP_VERIFY_IMAGE = 0x000CU,
     BOOT_OP_SET_MANIFEST = 0x000DU,
+    BOOT_OP_GET_DEVICE_INFO = 0x000EU,
     BOOT_OP_RESPONSE   = 0x8000U
 } boot_opcode_t;
 
@@ -81,6 +83,8 @@ typedef struct
 typedef struct
 {
     uint32_t target_id;
+    uint32_t board_id;
+    uint32_t flash_layout_id;
     uint32_t image_size;
     uint32_t image_crc32;
     uint32_t version;
@@ -104,6 +108,8 @@ typedef struct
     uint32_t magic;
     uint32_t manifest_version;
     uint32_t target_id;
+    uint32_t board_id;
+    uint32_t flash_layout_id;
     uint32_t image_size;
     uint32_t image_crc32;
     uint32_t firmware_version;
@@ -111,9 +117,13 @@ typedef struct
     uint32_t key_id;
     uint8_t image_sha256[BOOT_MANIFEST_SHA256_SIZE];
     uint8_t encryption_nonce[BOOT_MANIFEST_NONCE_SIZE];
-    uint32_t reserved[7];
+    uint32_t reserved[5];
     uint8_t signature[BOOT_MANIFEST_SIGNATURE_SIZE];
 } boot_manifest_t;
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(sizeof(boot_manifest_t) == BOOT_MANIFEST_SIZE, "boot_manifest_t size mismatch");
+#endif
 
 typedef struct
 {
@@ -125,6 +135,24 @@ typedef struct
     uint32_t max_chunk_size;
     uint32_t capabilities;
 } boot_hello_response_t;
+
+typedef struct
+{
+    uint32_t protocol_version;
+    uint32_t target_id;
+    uint32_t board_id;
+    uint32_t board_revision;
+    uint32_t flash_layout_id;
+    uint32_t flash_base;
+    uint32_t flash_size;
+    uint32_t app_base;
+    uint32_t metadata_base;
+    uint32_t metadata_size;
+    uint32_t erase_size;
+    uint32_t write_size;
+    uint32_t max_chunk_size;
+    uint32_t capabilities;
+} boot_device_info_response_t;
 
 typedef struct
 {

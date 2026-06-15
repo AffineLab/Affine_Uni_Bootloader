@@ -75,6 +75,8 @@ static void bootloader_prepare_metadata(bootloader_t *ctx, boot_metadata_t *meta
     memset(metadata, 0, sizeof(*metadata));
     metadata->magic = BOOT_METADATA_MAGIC;
     metadata->target_id = cfg->target_id;
+    metadata->board_id = cfg->board_id;
+    metadata->flash_layout_id = cfg->flash_layout_id;
     metadata->version = ctx->session.version;
     metadata->image_size = ctx->session.expected_size;
     metadata->image_crc32 = ctx->session.expected_crc32;
@@ -399,6 +401,8 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
     sec_req.version = req->version;
     sec_req.flags = req->flags;
     sec_req.target_id = req->target_id;
+    sec_req.board_id = req->board_id;
+    sec_req.flash_layout_id = req->flash_layout_id;
     sec_req.image_size = req->image_size;
     sec_req.expected_crc32 = req->image_crc32;
     sec_req.has_current_version = bootloader_current_version(&current_version);
@@ -406,7 +410,9 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
     sec_req.has_rollback_floor = bootloader_effective_rollback_floor(&rollback_floor_version);
     sec_req.rollback_floor_version = rollback_floor_version;
 
-    if (req->target_id != cfg->target_id)
+    if ((req->target_id != cfg->target_id) ||
+        (req->board_id != cfg->board_id) ||
+        (req->flash_layout_id != cfg->flash_layout_id))
     {
         return BOOT_ERR_BAD_TARGET;
     }
@@ -634,6 +640,35 @@ static void bootloader_handle_frame(bootloader_t *ctx, const boot_decoded_frame_
             rsp.flash_size = cfg->flash_size;
             rsp.app_base = cfg->app_base;
             rsp.slot_size = cfg->metadata_base - cfg->app_base;
+            rsp.max_chunk_size = cfg->max_chunk_size;
+            rsp.capabilities = boot_security_capabilities();
+            bootloader_send_response(frame->header.opcode, frame->header.sequence, &rsp, sizeof(rsp));
+            return;
+        }
+
+        case BOOT_OP_GET_DEVICE_INFO:
+        {
+            const boot_target_config_t *cfg = boot_platform_target();
+            boot_device_info_response_t rsp;
+
+            if (frame->header.payload_len != 0U)
+            {
+                err = BOOT_ERR_RANGE;
+                break;
+            }
+
+            rsp.protocol_version = BOOT_PROTOCOL_VERSION;
+            rsp.target_id = cfg->target_id;
+            rsp.board_id = cfg->board_id;
+            rsp.board_revision = cfg->board_revision;
+            rsp.flash_layout_id = cfg->flash_layout_id;
+            rsp.flash_base = cfg->flash_base;
+            rsp.flash_size = cfg->flash_size;
+            rsp.app_base = cfg->app_base;
+            rsp.metadata_base = cfg->metadata_base;
+            rsp.metadata_size = cfg->metadata_size;
+            rsp.erase_size = cfg->erase_size;
+            rsp.write_size = cfg->write_size;
             rsp.max_chunk_size = cfg->max_chunk_size;
             rsp.capabilities = boot_security_capabilities();
             bootloader_send_response(frame->header.opcode, frame->header.sequence, &rsp, sizeof(rsp));

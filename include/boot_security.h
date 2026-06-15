@@ -21,6 +21,8 @@ typedef struct
     uint32_t version;
     uint32_t flags;
     uint32_t target_id;
+    uint32_t board_id;
+    uint32_t flash_layout_id;
     uint32_t image_size;
     uint32_t expected_crc32;
     uint32_t current_version;
