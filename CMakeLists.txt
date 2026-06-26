@@ -206,6 +206,54 @@ if(AFFINE_BUILD_STM32G431)
             COMMENT "Generating bootloader_stm32g431.bin"
         )
     endif()
+
+    # --- G431 bootloader self-update app (reflashes the bootloader region) ---
+    set(STM32G431_UPDATER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/stm32g431_blupdater")
+    add_executable(g431_bl_updater EXCLUDE_FROM_ALL
+        ${STM32G431_UPDATER_DIR}/main.c
+        ${STM32G431_UPDATER_DIR}/v3_bl_image.c
+        ${STM32G431_TARGET_DIR}/baremetal_runtime.c
+        ${STM32G431_CUBE_DIR}/Core/Startup/startup_stm32g431cbux.s
+        ${STM32G431_CUBE_DIR}/Core/Src/system_stm32g4xx.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ramfunc.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc_ex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr_ex.c
+    )
+    target_include_directories(g431_bl_updater PRIVATE
+        ${STM32G431_UPDATER_DIR}
+        ${STM32G431_TARGET_DIR}
+        ${STM32G431_CUBE_DIR}/Core/Inc
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Inc
+        ${STM32G431_CUBE_DIR}/Drivers/CMSIS/Include
+        ${STM32G431_CUBE_DIR}/Drivers/CMSIS/Device/ST/STM32G4xx/Include
+    )
+    target_compile_definitions(g431_bl_updater PRIVATE STM32G431xx USE_HAL_DRIVER)
+    target_compile_options(g431_bl_updater PRIVATE
+        -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+        -Os -ffunction-sections -fdata-sections -Wall -Wextra
+    )
+    target_link_options(g431_bl_updater PRIVATE
+        -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+        -nostartfiles --specs=nano.specs --specs=nosys.specs
+        -T${STM32G431_TARGET_DIR}/STM32G431CBUX_APP.ld
+        -Wl,--gc-sections
+        -Wl,-Map=${CMAKE_BINARY_DIR}/g431_bl_updater.map
+    )
+    if(CMAKE_OBJCOPY)
+        add_custom_command(TARGET g431_bl_updater POST_BUILD
+            COMMAND ${CMAKE_OBJCOPY} -O binary
+                $<TARGET_FILE:g431_bl_updater>
+                ${CMAKE_BINARY_DIR}/g431_bl_updater.bin
+            BYPRODUCTS ${CMAKE_BINARY_DIR}/g431_bl_updater.bin
+            COMMENT "Generating g431_bl_updater.bin"
+        )
+    endif()
 endif()
 
 if(AFFINE_BUILD_STM32F072)
