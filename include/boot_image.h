@@ -27,6 +27,7 @@ typedef struct
     uint32_t key_id;
     uint32_t security_version;
     uint32_t min_source_version;
+    uint32_t metadata_reserved; /* keep sizeof(boot_metadata_t) an 8-byte (flash doubleword) multiple */
     uint8_t image_sha256[32];
     uint8_t encryption_nonce[16];
     uint8_t manifest_signature[256];
@@ -112,7 +113,8 @@ bool boot_image_crc_is_valid(const boot_metadata_t *metadata);
 bool boot_image_is_committed_and_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata);
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(sizeof(boot_metadata_t) == 356U, "boot_metadata_t size mismatch");
+_Static_assert(sizeof(boot_metadata_t) == 360U, "boot_metadata_t size mismatch");
+_Static_assert((sizeof(boot_metadata_t) % 8U) == 0U, "boot_metadata_t must be a flash-doubleword (8B) multiple");
 #endif
 
 #endif
