@@ -7,11 +7,11 @@
 
 #include "boot_image.h"
 
-#define BOOT_PROTOCOL_VERSION      0x00010004UL
+#define BOOT_PROTOCOL_VERSION      0x00010005UL
 #define BOOT_FRAME_MAGIC           0x42464641UL
 #define BOOT_FRAME_MAX_PAYLOAD     512U
 #define BOOT_MANIFEST_MAGIC        0x4D464641UL
-#define BOOT_MANIFEST_VERSION      2UL
+#define BOOT_MANIFEST_VERSION      3UL
 #define BOOT_MANIFEST_SHA256_SIZE  32U
 #define BOOT_MANIFEST_NONCE_SIZE   16U
 #define BOOT_MANIFEST_SIGNATURE_SIZE 256U
@@ -67,7 +67,8 @@ typedef enum
     BOOT_ERR_MANIFEST,
     BOOT_ERR_SIGNATURE,
     BOOT_ERR_ROLLBACK,
-    BOOT_ERR_DECRYPTION
+    BOOT_ERR_DECRYPTION,
+    BOOT_ERR_UPGRADE_PATH
 } boot_error_t;
 
 typedef struct
@@ -89,6 +90,8 @@ typedef struct
     uint32_t image_crc32;
     uint32_t version;
     uint32_t flags;
+    uint32_t security_version;
+    uint32_t min_source_version;
 } boot_begin_request_t;
 
 typedef struct
@@ -117,12 +120,15 @@ typedef struct
     uint32_t key_id;
     uint8_t image_sha256[BOOT_MANIFEST_SHA256_SIZE];
     uint8_t encryption_nonce[BOOT_MANIFEST_NONCE_SIZE];
-    uint32_t reserved[5];
+    uint32_t security_version;
+    uint32_t min_source_version;
+    uint32_t reserved[3];
     uint8_t signature[BOOT_MANIFEST_SIGNATURE_SIZE];
 } boot_manifest_t;
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 _Static_assert(sizeof(boot_manifest_t) == BOOT_MANIFEST_SIZE, "boot_manifest_t size mismatch");
+_Static_assert(sizeof(boot_begin_request_t) == 36U, "boot_begin_request_t size mismatch (expect 9 x u32)");
 #endif
 
 typedef struct

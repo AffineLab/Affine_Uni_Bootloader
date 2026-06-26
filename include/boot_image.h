@@ -25,7 +25,8 @@ typedef struct
     uint32_t flags;
     uint32_t metadata_crc32;
     uint32_t key_id;
-    uint32_t security_reserved[1];
+    uint32_t security_version;
+    uint32_t min_source_version;
     uint8_t image_sha256[32];
     uint8_t encryption_nonce[16];
     uint8_t manifest_signature[256];
@@ -52,6 +53,8 @@ typedef struct
     uint32_t written_size;
     uint32_t running_crc32;
     uint32_t flags;
+    uint32_t security_version;
+    uint32_t min_source_version;
 } boot_session_t;
 
 typedef struct
@@ -107,5 +110,9 @@ bool boot_security_state_is_valid(const boot_target_config_t *cfg, const boot_se
 bool boot_security_state_select_valid(const boot_target_config_t *cfg, boot_security_state_t *out_state);
 bool boot_image_crc_is_valid(const boot_metadata_t *metadata);
 bool boot_image_is_committed_and_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata);
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(sizeof(boot_metadata_t) == 356U, "boot_metadata_t size mismatch");
+#endif
 
 #endif

@@ -78,6 +78,8 @@ static void bootloader_prepare_metadata(bootloader_t *ctx, boot_metadata_t *meta
     metadata->board_id = cfg->board_id;
     metadata->flash_layout_id = cfg->flash_layout_id;
     metadata->version = ctx->session.version;
+    metadata->security_version = ctx->session.security_version;
+    metadata->min_source_version = ctx->session.min_source_version;
     metadata->image_size = ctx->session.expected_size;
     metadata->image_crc32 = ctx->session.expected_crc32;
     metadata->app_base = cfg->app_base;
@@ -86,6 +88,22 @@ static void bootloader_prepare_metadata(bootloader_t *ctx, boot_metadata_t *meta
 }
 
 static bool bootloader_current_version(uint32_t *out_version)
+{
+    boot_metadata_t metadata;
+
+    if (!boot_metadata_select_valid(boot_platform_target(), &metadata))
+    {
+        return false;
+    }
+
+    if (out_version != NULL)
+    {
+        *out_version = metadata.security_version;
+    }
+    return true;
+}
+
+static bool bootloader_current_feature_version(uint32_t *out_version)
 {
     boot_metadata_t metadata;
 
@@ -394,6 +412,7 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
     const boot_target_config_t *cfg = boot_platform_target();
     const uint32_t slot_size = cfg->metadata_base - cfg->app_base;
     uint32_t current_version = 0U;
+    uint32_t current_feature_version = 0U;
     uint32_t rollback_floor_version = 0U;
     boot_security_begin_t sec_req;
 
@@ -405,8 +424,12 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
     sec_req.flash_layout_id = req->flash_layout_id;
     sec_req.image_size = req->image_size;
     sec_req.expected_crc32 = req->image_crc32;
+    sec_req.security_version = req->security_version;
+    sec_req.min_source_version = req->min_source_version;
     sec_req.has_current_version = bootloader_current_version(&current_version);
     sec_req.current_version = current_version;
+    sec_req.has_current_feature_version = bootloader_current_feature_version(&current_feature_version);
+    sec_req.current_feature_version = current_feature_version;
     sec_req.has_rollback_floor = bootloader_effective_rollback_floor(&rollback_floor_version);
     sec_req.rollback_floor_version = rollback_floor_version;
 
@@ -449,6 +472,8 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
     memset(&ctx->session, 0, sizeof(ctx->session));
     ctx->session.state = BOOT_SESSION_STATE_OPEN;
     ctx->session.version = req->version;
+    ctx->session.security_version = req->security_version;
+    ctx->session.min_source_version = req->min_source_version;
     ctx->session.expected_size = req->image_size;
     ctx->session.expected_crc32 = req->image_crc32;
     ctx->session.running_crc32 = 0U;
@@ -595,7 +620,7 @@ static boot_error_t bootloader_commit_session(bootloader_t *ctx, const boot_comm
         (((metadata.flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0U) &&
          (AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED != 0)))
     {
-        uint32_t floor_version = metadata.version;
+        uint32_t floor_version = metadata.security_version;
 
         if (boot_security_state_select_valid(boot_platform_target(), &current_security_state) &&
             (current_security_state.rollback_floor_version > floor_version))

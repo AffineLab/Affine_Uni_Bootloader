@@ -19,6 +19,8 @@
 typedef struct
 {
     uint32_t version;
+    uint32_t security_version;
+    uint32_t min_source_version;
     uint32_t flags;
     uint32_t target_id;
     uint32_t board_id;
@@ -26,8 +28,10 @@ typedef struct
     uint32_t image_size;
     uint32_t expected_crc32;
     uint32_t current_version;
+    uint32_t current_feature_version;
     uint32_t rollback_floor_version;
     bool has_current_version;
+    bool has_current_feature_version;
     bool has_rollback_floor;
 } boot_security_begin_t;
 

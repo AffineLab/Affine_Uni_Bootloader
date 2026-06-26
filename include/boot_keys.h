@@ -7,6 +7,10 @@
 #define BOOT_RSA2048_PUBLIC_EXPONENT 65537UL
 #define BOOT_AES128_KEY_SIZE 16U
 
+/* Manifest signing-key identities, carried in boot_manifest_t.key_id. */
+#define BOOT_KEY_ID_REL 1U
+#define BOOT_KEY_ID_DEV 2U
+
 #ifdef AFFINE_BOOT_KEYS_OVERRIDE_HEADER
 #include AFFINE_BOOT_KEYS_OVERRIDE_HEADER
 #else
@@ -49,5 +53,27 @@ static const uint8_t g_boot_stream_aes128_key[BOOT_AES128_KEY_SIZE] = {
 };
 
 #endif
+
+/*
+ * Multi-key manifest verification: select the RSA-2048 modulus by manifest
+ * key_id. Returns a null pointer for an unknown/untrusted key_id, which the
+ * caller MUST treat as a signature failure.
+ *
+ * NOTE: until generate_boot_keys_header.py emits distinct rel/dev moduli
+ * (SIGN-4) and the production key ceremony runs (KEY-2), both trusted key_ids
+ * map to the single g_boot_manifest_rsa2048_modulus. Revoking the dev key is
+ * shipping a build whose table omits BOOT_KEY_ID_DEV.
+ */
+static inline const uint8_t *boot_manifest_modulus_for_key_id(uint32_t key_id)
+{
+    switch (key_id)
+    {
+    case BOOT_KEY_ID_REL:
+    case BOOT_KEY_ID_DEV:
+        return g_boot_manifest_rsa2048_modulus;
+    default:
+        return (const uint8_t *)0;
+    }
+}
 
 #endif
