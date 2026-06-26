@@ -37,7 +37,7 @@ def require_pyserial() -> None:
 
 
 BOOT_FRAME_MAGIC = 0x42464641
-BOOT_PROTOCOL_VERSION = 0x00010004
+BOOT_PROTOCOL_VERSION = 0x00010005
 
 BOOT_OP_HELLO = 0x0001
 BOOT_OP_BEGIN = 0x0002
@@ -57,7 +57,7 @@ BOOT_OP_RESPONSE = 0x8000
 
 BOOT_FRAME_MAX_PAYLOAD = 512
 BOOT_MANIFEST_MAGIC = 0x4D464641
-BOOT_MANIFEST_VERSION = 2
+BOOT_MANIFEST_VERSION = 3
 BOOT_MANIFEST_SIZE = 364
 BOOT_MANIFEST_NONCE_OFFSET = 72
 BOOT_DATA_PREFIX_SIZE = 8
@@ -225,6 +225,8 @@ def build_signed_manifest(
     image_crc: int,
     version: int,
     flags: int,
+    security_version: int,
+    min_source_version: int,
     key_id: int,
     nonce: bytes,
     private_key: pathlib.Path,
@@ -243,8 +245,8 @@ def build_signed_manifest(
         key_id,
         hashlib.sha256(image).digest(),
         nonce,
-        0,
-        0,
+        security_version,
+        min_source_version,
         0,
         0,
         0,
@@ -271,6 +273,7 @@ def parse_manifest_header(manifest: bytes) -> dict[str, int]:
         flags,
         key_id,
     ) = struct.unpack_from("<10I", manifest, 0)
+    security_version, min_source_version = struct.unpack_from("<2I", manifest, 88)
     return {
         "magic": magic,
         "manifest_version": manifest_version,
@@ -282,6 +285,8 @@ def parse_manifest_header(manifest: bytes) -> dict[str, int]:
         "firmware_version": firmware_version,
         "flags": flags,
         "key_id": key_id,
+        "security_version": security_version,
+        "min_source_version": min_source_version,
     }
 
 
@@ -970,6 +975,8 @@ def flash_image(
     image_path: pathlib.Path,
     version: int,
     flags: int,
+    security_version: int,
+    min_source_version: int,
     retries: int,
     retry_interval: float,
     open_retries: int,
@@ -1143,6 +1150,8 @@ def flash_image(
             image_crc,
             version,
             flags,
+            security_version,
+            min_source_version,
             manifest_key_id,
             manifest_nonce,
             manifest_key,
@@ -1163,8 +1172,16 @@ def flash_image(
         f"write_align={write_align}, chunk={usable_chunk}"
     )
 
+    if manifest_payload is not None:
+        _minfo = parse_manifest_header(manifest_payload)
+        begin_security_version = _minfo["security_version"]
+        begin_min_source_version = _minfo["min_source_version"]
+    else:
+        begin_security_version = security_version
+        begin_min_source_version = min_source_version
+
     begin_payload = struct.pack(
-        "<7I",
+        "<9I",
         target_id,
         board_id,
         flash_layout_id,
@@ -1172,6 +1189,8 @@ def flash_image(
         image_crc,
         version,
         flags,
+        begin_security_version,
+        begin_min_source_version,
     )
     try:
         _, begin_rsp = send_frame_and_read(
@@ -1403,6 +1422,8 @@ def main() -> int:
     parser.add_argument("--retry-interval", type=float, default=0.1, help="delay between retries")
     parser.add_argument("--open-retries", type=int, default=10, help="serial open retry count")
     parser.add_argument("--version", type=lambda value: int(value, 0), default=1, help="firmware version for BEGIN")
+    parser.add_argument("--security-version", type=lambda value: int(value, 0), default=0, help="security version (SVN) driving anti-rollback; manifest v3")
+    parser.add_argument("--min-source-version", type=lambda value: int(value, 0), default=0, help="minimum installed FEATURE version required before this image may apply (staged upgrade path); manifest v3")
     parser.add_argument("--target-id", type=lambda value: int(value, 0), help="target ID for offline manifest dry-run generation")
     parser.add_argument("--board-id", type=lambda value: int(value, 0), help="expected or offline board ID")
     parser.add_argument("--flash-layout-id", type=lambda value: int(value, 0), help="expected or offline flash layout ID")
@@ -1619,6 +1640,8 @@ def main() -> int:
                     pathlib.Path(args.image),
                     args.version,
                     flash_flags,
+                    args.security_version,
+                    args.min_source_version,
                     args.retries,
                     args.retry_interval,
                     args.open_retries,
