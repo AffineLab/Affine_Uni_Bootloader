@@ -1602,6 +1602,8 @@ def main() -> int:
                     crc32(image),
                     args.version,
                     dry_flags,
+                    args.security_version,
+                    args.min_source_version,
                     args.manifest_key_id,
                     args.manifest_nonce,
                     args.manifest_key,
