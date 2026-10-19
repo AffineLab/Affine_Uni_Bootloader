@@ -63,6 +63,7 @@ typedef struct
     uint32_t flash_base;
     uint32_t flash_size;
     uint32_t app_base;
+    uint32_t app_size;
     uint32_t metadata_base;
     uint32_t metadata_size;
     uint32_t sram_base;

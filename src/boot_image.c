@@ -82,7 +82,8 @@ static bool boot_address_in_sram(const boot_target_config_t *cfg, uint32_t addr)
 
 static bool boot_address_in_app_slot(const boot_target_config_t *cfg, uint32_t addr)
 {
-    return (addr >= cfg->app_base) && (addr < cfg->metadata_base);
+    return (addr >= cfg->app_base) &&
+           ((addr - cfg->app_base) < cfg->app_size);
 }
 
 bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_base)
@@ -107,7 +108,7 @@ bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_ba
 
 bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata)
 {
-    const uint32_t slot_size = cfg->metadata_base - cfg->app_base;
+    const uint32_t slot_size = cfg->app_size;
 
     if (metadata->magic != BOOT_METADATA_MAGIC)
     {

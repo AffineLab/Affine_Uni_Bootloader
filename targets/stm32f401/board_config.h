@@ -8,6 +8,7 @@ static const boot_target_config_t g_target_config = {
     .flash_base = 0x08000000UL,
     .flash_size = 256UL * 1024UL,
     .app_base = 0x08008000UL,
+    .app_size = 0x00034000UL,
     .metadata_base = 0x0803C000UL,
     .metadata_size = 0x4000UL,
     .sram_base = 0x20000000UL,

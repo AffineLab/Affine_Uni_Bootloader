@@ -410,7 +410,7 @@ static boot_error_t bootloader_store_metadata(bootloader_t *ctx,
 static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin_request_t *req)
 {
     const boot_target_config_t *cfg = boot_platform_target();
-    const uint32_t slot_size = cfg->metadata_base - cfg->app_base;
+    const uint32_t slot_size = cfg->app_size;
     uint32_t current_version = 0U;
     uint32_t current_feature_version = 0U;
     uint32_t rollback_floor_version = 0U;
@@ -664,7 +664,7 @@ static void bootloader_handle_frame(bootloader_t *ctx, const boot_decoded_frame_
             rsp.target_id = cfg->target_id;
             rsp.flash_size = cfg->flash_size;
             rsp.app_base = cfg->app_base;
-            rsp.slot_size = cfg->metadata_base - cfg->app_base;
+            rsp.slot_size = cfg->app_size;
             rsp.max_chunk_size = cfg->max_chunk_size;
             rsp.capabilities = boot_security_capabilities();
             bootloader_send_response(frame->header.opcode, frame->header.sequence, &rsp, sizeof(rsp));
