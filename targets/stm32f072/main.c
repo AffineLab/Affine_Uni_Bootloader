@@ -2,12 +2,17 @@
 
 #include <string.h>
 
+#include "boot_platform.h"
 #include "bootloader.h"
 #include "usb_device.h"
 
 #define BOOT_USB_RX_FIFO_SIZE  1024U
 #define BOOT_USB_DRAIN_CHUNK    64U
 #define BOOT_AUTO_BOOT_DELAY_MS 1000U
+/* See boot_guard_stm32f072.c: the request word and value the guard looks for. */
+#define BOOT_ROM_LOADER_REQUEST_ADDRESS (0x20000000UL + 0x3F00UL)
+#define BOOT_ROM_LOADER_REQUEST         0x55444621UL
+#define BOOT_ROM_LOADER_FALLBACK_MS     60000U
 
 static bootloader_t g_bootloader;
 static volatile uint16_t g_usb_rx_head;
@@ -139,8 +144,27 @@ int main(void)
         bootloader_try_boot_app(&g_bootloader);
     }
 
+#if defined(AFFINE_BOARD_MONICA_LITE_R1) && defined(AFFINE_BOOT_F072_ROM_LOADER_ESCAPE)
+    /*
+     * Development builds for a board without a button: a bootloader that
+     * nobody manages to talk to (no application yet, USB not coming up) hands
+     * over to the MCU's ROM loader after a while, through the boot guard.
+     */
+    boot_wait_start_ms = HAL_GetTick();
+    for (;;)
+    {
+        boot_stm32f072_poll();
+        if ((g_bootloader.frame_ok_count == 0U) &&
+            ((HAL_GetTick() - boot_wait_start_ms) >= BOOT_ROM_LOADER_FALLBACK_MS))
+        {
+            *(volatile uint32_t *)BOOT_ROM_LOADER_REQUEST_ADDRESS = BOOT_ROM_LOADER_REQUEST;
+            boot_platform_reboot();
+        }
+    }
+#else
     for (;;)
     {
         boot_stm32f072_poll();
     }
+#endif
 }

@@ -201,5 +201,48 @@ void boot_platform_jump_to_app(uint32_t app_base)
 
 void boot_platform_reboot(void)
 {
+#if defined(AFFINE_BOARD_MONICA_LITE_R1)
+    /*
+     * NRST is tied to the supply on this board, so a reset the MCU asks for
+     * itself never happens. Put the hardware back into its reset state by
+     * hand and start again from the reset vector.
+     */
+    const uint32_t *vectors = (const uint32_t *)g_target_config.flash_base;
+
+    __disable_irq();
+
+    HAL_DeInit();
+    HAL_RCC_DeInit();
+
+    SysTick->CTRL = 0U;
+    SysTick->LOAD = 0U;
+    SysTick->VAL = 0U;
+    SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
+
+    for (uint32_t i = 0U; i < (sizeof(NVIC->ICER) / sizeof(NVIC->ICER[0])); ++i)
+    {
+        NVIC->ICER[i] = 0xFFFFFFFFUL;
+        NVIC->ICPR[i] = 0xFFFFFFFFUL;
+    }
+
+    /* The USB pull-up went away with the peripheral: give the host time to notice. */
+    for (volatile uint32_t i = 0U; i < 100000UL; ++i)
+    {
+    }
+
+    __HAL_RCC_SYSCFG_CLK_ENABLE();
+    __HAL_SYSCFG_REMAPMEMORY_FLASH();
+    __DSB();
+    __ISB();
+
+    __enable_irq();
+    __set_MSP(vectors[0]);
+    ((void (*)(void))vectors[1])();
+
+    for (;;)
+    {
+    }
+#else
     NVIC_SystemReset();
+#endif
 }

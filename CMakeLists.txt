@@ -80,6 +80,8 @@ option(AFFINE_BUILD_STM32H503 "Build STM32H503 bootloader target" OFF)
 option(AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT "Use the protected 40 KiB Keychip application slot" OFF)
 option(AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY "Require signed anti-rollback updates for the Keychip layout" OFF)
 option(AFFINE_BUILD_STM32F072 "Build STM32F072 bootloader target" OFF)
+set(AFFINE_BOOT_F072_BOARD "monica" CACHE STRING "STM32F072 board: monica or monica_lite_r1")
+option(AFFINE_BOOT_F072_ROM_LOADER_ESCAPE "monica_lite_r1: let the application ask for the MCU ROM loader (development only)" OFF)
 
 if(AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY)
     if(NOT AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT)
@@ -283,6 +285,18 @@ if(AFFINE_BUILD_STM32F072)
     affine_require_existing_path("${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_core.c"
         "STM32F072 USB Device middleware")
 
+    if(AFFINE_BOOT_F072_BOARD STREQUAL "monica_lite_r1")
+        set(STM32F072_STARTUP ${STM32F072_TARGET_DIR}/startup_stm32f072cbtx_guarded.s)
+        set(STM32F072_LINKER_SCRIPT ${STM32F072_TARGET_DIR}/STM32F072CBTX_BOOTLOADER_GUARDED.ld)
+        set(STM32F072_BOARD_SOURCES ${STM32F072_TARGET_DIR}/boot_guard_stm32f072.c)
+    elseif(AFFINE_BOOT_F072_BOARD STREQUAL "monica")
+        set(STM32F072_STARTUP ${STM32F072_CUBE_DIR}/Core/Startup/startup_stm32f072cbtx.s)
+        set(STM32F072_LINKER_SCRIPT ${STM32F072_TARGET_DIR}/STM32F072CBTX_BOOTLOADER.ld)
+        set(STM32F072_BOARD_SOURCES ${STM32F072_TARGET_DIR}/boot_info_stm32f072.c)
+    else()
+        message(FATAL_ERROR "Unknown AFFINE_BOOT_F072_BOARD: ${AFFINE_BOOT_F072_BOARD}")
+    endif()
+
     add_executable(bootloader_stm32f072
         src/boot_protocol.c
         src/boot_crypto.c
@@ -298,7 +312,8 @@ if(AFFINE_BUILD_STM32F072)
         ${STM32F072_TARGET_DIR}/baremetal_runtime.c
         ${STM32F072_TARGET_DIR}/stm32f0xx_it.c
         ${STM32F072_CUBE_DIR}/Core/Src/system_stm32f0xx.c
-        ${STM32F072_CUBE_DIR}/Core/Startup/startup_stm32f072cbtx.s
+        ${STM32F072_STARTUP}
+        ${STM32F072_BOARD_SOURCES}
         ${STM32F072_COMPOSITE_DIR}/App/usb_device.c
         ${STM32F072_TARGET_DIR}/usbd_conf.c
         ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_core.c
@@ -339,6 +354,12 @@ if(AFFINE_BUILD_STM32F072)
         STM32F072xB
         USE_HAL_DRIVER
     )
+    if(AFFINE_BOOT_F072_BOARD STREQUAL "monica_lite_r1")
+        target_compile_definitions(bootloader_stm32f072 PRIVATE AFFINE_BOARD_MONICA_LITE_R1)
+        if(AFFINE_BOOT_F072_ROM_LOADER_ESCAPE)
+            target_compile_definitions(bootloader_stm32f072 PRIVATE AFFINE_BOOT_F072_ROM_LOADER_ESCAPE=1)
+        endif()
+    endif()
     affine_apply_boot_policy(bootloader_stm32f072)
 
     target_compile_options(bootloader_stm32f072 PRIVATE
@@ -376,7 +397,7 @@ if(AFFINE_BUILD_STM32F072)
         -nostartfiles
         --specs=nano.specs
         --specs=nosys.specs
-        -T${STM32F072_TARGET_DIR}/STM32F072CBTX_BOOTLOADER.ld
+        -T${STM32F072_LINKER_SCRIPT}
         -Wl,--gc-sections
         -Wl,-Map=${CMAKE_BINARY_DIR}/bootloader_stm32f072.map
     )

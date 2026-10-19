@@ -17,7 +17,11 @@ static const boot_target_config_t g_target_config = {
     .write_size = 2UL,
     .max_chunk_size = 256UL,
     .target_id = BOOT_TARGET_ID_STM32F072,
+#if defined(AFFINE_BOARD_MONICA_LITE_R1)
+    .board_id = BOOT_BOARD_ID_MONICA_LITE_R1,
+#else
     .board_id = BOOT_BOARD_ID_MONICA_NFC,
+#endif
     .board_revision = 1UL,
     .flash_layout_id = BOOT_LAYOUT_ID_F072_A
 };
