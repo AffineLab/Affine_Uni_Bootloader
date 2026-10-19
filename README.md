@@ -82,6 +82,17 @@ Supported targets reserve 24 KiB for the bootloader:
 | `STM32G431` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801DFFF` (96 KiB) | `0x0801E000`-`0x0801FFFF` |
 | `STM32H503` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`-`0x0801FFFF` |
 
+For the H503 Keychip build, configure
+`-DAFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT=ON`. It advertises a distinct board and
+layout ID and hard-caps the application slot at
+`0x08006000`-`0x0800FFFF` (40 KiB), while leaving
+`0x08010000`-`0x0801BFFF` unavailable to update erase/write operations.
+Production Keychip builds should also set
+`-DAFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY=ON` and provide a reviewed generated
+key header through `-DAFFINE_BOOT_KEYS_HEADER=...`. That profile rejects
+unsigned updates and requires anti-rollback on signed images; configuration
+fails instead of silently using development keys when the key header is absent.
+
 ## Security Model
 
 The bootloader supports both unsigned development updates and signed secure updates.

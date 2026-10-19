@@ -77,7 +77,22 @@ target_link_libraries(bootloader_stub PRIVATE boot_core)
 
 option(AFFINE_BUILD_STM32G431 "Build STM32G431 bootloader target" OFF)
 option(AFFINE_BUILD_STM32H503 "Build STM32H503 bootloader target" OFF)
+option(AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT "Use the protected 40 KiB Keychip application slot" OFF)
+option(AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY "Require signed anti-rollback updates for the Keychip layout" OFF)
 option(AFFINE_BUILD_STM32F072 "Build STM32F072 bootloader target" OFF)
+
+if(AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY)
+    if(NOT AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT)
+        message(FATAL_ERROR "AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY requires AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT")
+    endif()
+    if(NOT AFFINE_BOOT_KEYS_HEADER)
+        message(FATAL_ERROR "Keychip production policy requires AFFINE_BOOT_KEYS_HEADER with reviewed production keys")
+    endif()
+    set(AFFINE_BOOT_ALLOW_UNSIGNED_UPDATES 0)
+    set(AFFINE_BOOT_REQUIRE_SIGNED_UPDATES 1)
+    set(AFFINE_BOOT_ALLOW_OPTIONAL_ANTI_ROLLBACK 1)
+    set(AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED 1)
+endif()
 
 set(BOOT_TARGET_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/targets/common/boot_target_common.c
@@ -445,6 +460,9 @@ if(AFFINE_BUILD_STM32H503)
         STM32H503xx
         USE_HAL_DRIVER
     )
+    if(AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT)
+        target_compile_definitions(bootloader_stm32h503 PRIVATE AFFINE_BOOT_H503_KEYCHIP_LAYOUT=1)
+    endif()
     affine_apply_boot_policy(bootloader_stm32h503)
 
     target_compile_options(bootloader_stm32h503 PRIVATE
