@@ -542,6 +542,59 @@ def decode_status(payload: bytes) -> str:
 
 
 def decode_metadata(payload: bytes) -> str:
+    if len(payload) == 420:
+        fields = struct.unpack("<21I32s16s256s8I", payload)
+        (
+            valid,
+            copy_count,
+            selected_copy,
+            app_valid,
+            security_state_valid,
+            magic,
+            target_id,
+            board_id,
+            flash_layout_id,
+            version,
+            image_size,
+            image_crc32,
+            app_base,
+            flags,
+            metadata_crc32,
+            key_id,
+            security_version,
+            min_source_version,
+            *rest,
+        ) = fields
+        image_sha256, nonce, signature = rest[3:6]
+        security_fields = rest[6:]
+        selected = "none" if selected_copy == 0xFFFFFFFF else str(selected_copy)
+
+        return (
+            f"valid={valid}, "
+            f"copy_count={copy_count}, "
+            f"selected_copy={selected}, "
+            f"app_vector_valid={app_valid}, "
+            f"security_state_valid={security_state_valid}, "
+            f"magic=0x{magic:08X}, "
+            f"target=0x{target_id:08X}, "
+            f"board=0x{board_id:08X}, "
+            f"layout=0x{flash_layout_id:08X}, "
+            f"version={version}, "
+            f"security_version={security_version}, "
+            f"min_source_version={min_source_version}, "
+            f"image_size={image_size}, "
+            f"image_crc32=0x{image_crc32:08X}, "
+            f"app_base=0x{app_base:08X}, "
+            f"flags=0x{flags:08X}({format_bit_names(flags, BOOT_FLAG_NAMES)}), "
+            f"metadata_crc32=0x{metadata_crc32:08X}, "
+            f"key_id={key_id}, "
+            f"image_sha256={image_sha256.hex()}, "
+            f"nonce={nonce.hex()}, "
+            f"signature_present={any(signature)}, "
+            f"security_magic=0x{security_fields[0]:08X}, "
+            f"rollback_floor={security_fields[5]}"
+        )
+
     if len(payload) == 80:
         fields = struct.unpack("<20I", payload)
         valid, copy_count, selected_copy, app_valid = fields[:4]
