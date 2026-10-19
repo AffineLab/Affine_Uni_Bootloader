@@ -416,58 +416,87 @@ static void rsa_sub_in_place(uint32_t a[RSA2048_WORDS], const uint32_t b[RSA2048
     }
 }
 
-static void rsa_add_mod(uint32_t out[RSA2048_WORDS],
-                        const uint32_t a[RSA2048_WORDS],
-                        const uint32_t b[RSA2048_WORDS],
-                        const uint32_t mod[RSA2048_WORDS])
+/* value = 2 * value mod mod, for value < mod. */
+static void rsa_double_mod(uint32_t value[RSA2048_WORDS], const uint32_t mod[RSA2048_WORDS])
 {
-    uint64_t carry = 0U;
+    uint32_t carry = 0U;
 
     for (uint32_t i = 0U; i < RSA2048_WORDS; ++i)
     {
-        const uint64_t sum = (uint64_t)a[i] + b[i] + carry;
-        out[i] = (uint32_t)sum;
-        carry = sum >> 32;
+        const uint32_t word = value[i];
+        value[i] = (word << 1) | carry;
+        carry = word >> 31;
     }
 
-    if ((carry != 0U) || (rsa_cmp(out, mod) >= 0))
+    if ((carry != 0U) || (rsa_cmp(value, mod) >= 0))
     {
-        rsa_sub_in_place(out, mod);
+        rsa_sub_in_place(value, mod);
     }
 }
 
-static void rsa_double_mod(uint32_t value[RSA2048_WORDS], const uint32_t mod[RSA2048_WORDS])
+/* -1 / n0 modulo 2^32, for odd n0. Each step doubles the number of correct bits. */
+static uint32_t rsa_mont_n0_inverse(uint32_t n0)
 {
-    uint32_t copy[RSA2048_WORDS];
+    uint32_t inverse = n0; /* correct to 3 bits */
 
-    memcpy(copy, value, sizeof(copy));
-    rsa_add_mod(value, copy, copy, mod);
+    for (uint32_t i = 0U; i < 5U; ++i)
+    {
+        inverse *= 2U - (n0 * inverse);
+    }
+    return 0U - inverse;
 }
 
-static void rsa_modmul(uint32_t out[RSA2048_WORDS],
-                       const uint32_t a[RSA2048_WORDS],
-                       const uint32_t b[RSA2048_WORDS],
-                       const uint32_t mod[RSA2048_WORDS])
+/* Montgomery multiplication, R = 2^2048: out = a * b / R mod mod, for odd mod
+ * and a, b < mod. One pass over the words of b; each pass adds a[] * b[i] and
+ * the multiple of mod that clears the lowest word, then drops that word.
+ * out may be a or b. */
+static void rsa_mont_mul(uint32_t out[RSA2048_WORDS],
+                         const uint32_t a[RSA2048_WORDS],
+                         const uint32_t b[RSA2048_WORDS],
+                         const uint32_t mod[RSA2048_WORDS],
+                         uint32_t n0_inverse)
 {
-    uint32_t result[RSA2048_WORDS] = {0};
-    uint32_t temp[RSA2048_WORDS];
+    uint32_t t[RSA2048_WORDS + 2U] = {0};
 
-    memcpy(temp, a, sizeof(temp));
-
-    for (uint32_t bit = 0U; bit < (RSA2048_WORDS * 32U); ++bit)
+    for (uint32_t i = 0U; i < RSA2048_WORDS; ++i)
     {
-        if ((b[bit / 32U] & (1UL << (bit % 32U))) != 0U)
+        const uint32_t bi = b[i];
+        uint64_t acc;
+        uint32_t carry = 0U;
+        uint32_t m;
+
+        for (uint32_t j = 0U; j < RSA2048_WORDS; ++j)
         {
-            uint32_t next[RSA2048_WORDS];
-            rsa_add_mod(next, result, temp, mod);
-            memcpy(result, next, sizeof(result));
+            acc = ((uint64_t)a[j] * bi) + t[j] + carry;
+            t[j] = (uint32_t)acc;
+            carry = (uint32_t)(acc >> 32);
         }
-        rsa_double_mod(temp, mod);
+        acc = (uint64_t)t[RSA2048_WORDS] + carry;
+        t[RSA2048_WORDS] = (uint32_t)acc;
+        t[RSA2048_WORDS + 1U] = (uint32_t)(acc >> 32);
+
+        m = t[0] * n0_inverse;
+        acc = ((uint64_t)m * mod[0]) + t[0];
+        carry = (uint32_t)(acc >> 32);
+        for (uint32_t j = 1U; j < RSA2048_WORDS; ++j)
+        {
+            acc = ((uint64_t)m * mod[j]) + t[j] + carry;
+            t[j - 1U] = (uint32_t)acc;
+            carry = (uint32_t)(acc >> 32);
+        }
+        acc = (uint64_t)t[RSA2048_WORDS] + carry;
+        t[RSA2048_WORDS - 1U] = (uint32_t)acc;
+        t[RSA2048_WORDS] = t[RSA2048_WORDS + 1U] + (uint32_t)(acc >> 32);
     }
 
-    memcpy(out, result, sizeof(result));
+    if ((t[RSA2048_WORDS] != 0U) || (rsa_cmp(t, mod) >= 0))
+    {
+        rsa_sub_in_place(t, mod);
+    }
+    memcpy(out, t, RSA2048_WORDS * sizeof(uint32_t));
 }
 
+/* signature ^ 65537 mod modulus. */
 static bool rsa2048_public_decrypt(uint8_t out[RSA2048_BYTES],
                                    const uint8_t modulus_be[RSA2048_BYTES],
                                    const uint8_t signature_be[RSA2048_BYTES])
@@ -475,6 +504,7 @@ static bool rsa2048_public_decrypt(uint8_t out[RSA2048_BYTES],
     uint32_t modulus[RSA2048_WORDS];
     uint32_t base[RSA2048_WORDS];
     uint32_t acc[RSA2048_WORDS];
+    uint32_t n0_inverse;
 
     rsa_words_from_be(modulus, modulus_be);
     rsa_words_from_be(base, signature_be);
@@ -483,17 +513,33 @@ static bool rsa2048_public_decrypt(uint8_t out[RSA2048_BYTES],
     {
         return false;
     }
+    n0_inverse = rsa_mont_n0_inverse(modulus[0]);
 
-    memcpy(acc, base, sizeof(acc));
-
-    for (uint32_t i = 0U; i < 16U; ++i)
+    /* acc = R^2 mod modulus: 1, doubled 2 * 2048 times. */
+    memset(acc, 0, sizeof(acc));
+    acc[0] = 1U;
+    if (rsa_cmp(acc, modulus) >= 0)
     {
-        uint32_t squared[RSA2048_WORDS];
-        rsa_modmul(squared, acc, acc, modulus);
-        memcpy(acc, squared, sizeof(acc));
+        return false; /* a modulus of 1 */
+    }
+    for (uint32_t i = 0U; i < (2U * RSA2048_WORDS * 32U); ++i)
+    {
+        rsa_double_mod(acc, modulus);
     }
 
-    rsa_modmul(acc, acc, base, modulus);
+    /* base = signature * R; acc = base^65536; acc = acc * base = signature^65537 * R */
+    rsa_mont_mul(base, base, acc, modulus, n0_inverse);
+    memcpy(acc, base, sizeof(acc));
+    for (uint32_t i = 0U; i < 16U; ++i)
+    {
+        rsa_mont_mul(acc, acc, acc, modulus, n0_inverse);
+    }
+    rsa_mont_mul(acc, acc, base, modulus, n0_inverse);
+
+    /* out of the Montgomery form: times 1 */
+    memset(base, 0, sizeof(base));
+    base[0] = 1U;
+    rsa_mont_mul(acc, acc, base, modulus, n0_inverse);
 
     rsa_words_to_be(out, acc);
     return true;
