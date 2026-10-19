@@ -1046,6 +1046,7 @@ def flash_image(
     encrypt_key: bytes | None,
     expected_board_id: int | None,
     expected_flash_layout_id: int | None,
+    pre_encrypted: bool = False,
 ) -> int:
     sequence = 1
 
@@ -1148,9 +1149,16 @@ def flash_image(
     image_crc = crc32(image)
     manifest_payload: bytes | None = None
     upload_image = image
+    if pre_encrypted and manifest_path is None:
+        raise RuntimeError("--pre-encrypted needs the --manifest that was made with the image")
     if manifest_path is not None:
         manifest_payload = manifest_path.read_bytes()
         manifest_info = parse_manifest_header(manifest_payload)
+        if pre_encrypted:
+            # The file is ciphertext: the plaintext CRC and the version can only
+            # come from the signed manifest. The bootloader checks both.
+            image_crc = manifest_info["image_crc32"]
+            version = manifest_info["firmware_version"]
         if manifest_info["magic"] != BOOT_MANIFEST_MAGIC:
             raise RuntimeError("manifest magic mismatch")
         if manifest_info["manifest_version"] != BOOT_MANIFEST_VERSION:
@@ -1215,7 +1223,8 @@ def flash_image(
     if (flags & BOOT_FLAG_ENCRYPTED_IMAGE) != 0:
         if manifest_payload is None:
             raise RuntimeError("--manifest or --manifest-key is required for encrypted updates")
-        upload_image = aes128_ctr_crypt(image, encrypt_key or BOOT_DEV_AES128_KEY, manifest_nonce)
+        if not pre_encrypted:
+            upload_image = aes128_ctr_crypt(image, encrypt_key or BOOT_DEV_AES128_KEY, manifest_nonce)
 
     print(
         f"image={image_path.name}, original_size={original_size}, padded_size={len(image)}, "
@@ -1510,6 +1519,16 @@ def main() -> int:
     parser.add_argument("--write-align", type=lambda value: int(value, 0), default=0, help="override flash write alignment; 0 auto-detects known targets")
     parser.add_argument("--begin-timeout", type=float, default=6.0, help="response timeout for BEGIN in seconds")
     parser.add_argument("--commit-timeout", type=float, default=3.0, help="response timeout for COMMIT in seconds")
+    parser.add_argument(
+        "--encrypted-out",
+        type=pathlib.Path,
+        help="with --dry-run --encrypted: write the encrypted image here, for flashing later with --pre-encrypted",
+    )
+    parser.add_argument(
+        "--pre-encrypted",
+        action="store_true",
+        help="the image file is already encrypted (made with --encrypted-out); needs its --manifest, no keys",
+    )
     parser.add_argument("--run", action="store_true", help="boot the application after COMMIT")
     parser.add_argument("--app-jump", action="store_true", help="send Mai app command 0x25 to reboot into bootloader before flashing")
     parser.add_argument("--reconnect-delay", type=float, default=1.2, help="delay after app-jump reset before reopening the bootloader port")
@@ -1609,6 +1628,12 @@ def main() -> int:
                     args.manifest_key,
                 )
                 args.manifest_out.write_bytes(manifest)
+            if args.encrypted_out is not None:
+                if not args.encrypted:
+                    parser.error("--encrypted-out needs --encrypted")
+                args.encrypted_out.write_bytes(
+                    aes128_ctr_crypt(image, args.encrypt_key or BOOT_DEV_AES128_KEY, args.manifest_nonce)
+                )
             print(
                 f"flash image={image_path}, original_size={original_size}, "
                 f"padded_size={len(image)}, write_align={write_align}, "
@@ -1713,6 +1738,7 @@ def main() -> int:
                     args.encrypt_key,
                     args.board_id,
                     args.flash_layout_id,
+                    pre_encrypted=args.pre_encrypted,
                 )
                 if result == 0 and args.run and args.wait_app:
                     port.close()
