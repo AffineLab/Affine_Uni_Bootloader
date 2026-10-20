@@ -279,6 +279,7 @@ boot_error_t boot_security_verify_image_with_state(const boot_target_config_t *c
     boot_security_state_t security_state;
     uint8_t image_sha256[BOOT_SHA256_DIGEST_SIZE];
     uint32_t offset = 0U;
+    uint32_t ecc_errors;
     const bool signed_image = (metadata != NULL) && ((metadata->flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0U);
     const bool rollback_required =
         ((metadata != NULL) && ((metadata->flags & BOOT_FLAG_ANTI_ROLLBACK) != 0U)) ||
@@ -332,6 +333,7 @@ boot_error_t boot_security_verify_image_with_state(const boot_target_config_t *c
         return BOOT_ERR_SIGNATURE;
     }
 
+    ecc_errors = boot_platform_flash_ecc_error_count();
     boot_sha256_init(&sha);
     while (offset < metadata->image_size)
     {
@@ -344,6 +346,11 @@ boot_error_t boot_security_verify_image_with_state(const boot_target_config_t *c
         offset += chunk_len;
     }
     boot_sha256_final(&sha, image_sha256);
+
+    if (boot_platform_flash_ecc_error_count() != ecc_errors)
+    {
+        return BOOT_ERR_FLASH;
+    }
 
     if (memcmp(image_sha256, metadata->image_sha256, sizeof(image_sha256)) != 0)
     {

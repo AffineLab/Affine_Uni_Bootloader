@@ -79,6 +79,11 @@ void boot_platform_watchdog_kick(void)
 #endif
 }
 
+uint32_t boot_platform_flash_ecc_error_count(void)
+{
+    return 0U; /* no flash ECC on this part */
+}
+
 void boot_platform_flash_unlock(void)
 {
     HAL_FLASH_Unlock();

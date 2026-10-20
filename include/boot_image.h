@@ -98,6 +98,10 @@ static inline uint32_t boot_security_state_copy_address(const boot_target_config
     return boot_metadata_copy_address(cfg, copy_index) + boot_security_state_offset(cfg);
 }
 
+/* Copies flash into RAM. False if a flash ECC error was raised while reading,
+ * in which case out holds nothing usable. */
+bool boot_flash_read(uint32_t address, void *out, uint32_t length);
+
 uint32_t boot_metadata_crc32(const boot_metadata_t *metadata);
 void boot_metadata_update_crc(boot_metadata_t *metadata);
 uint32_t boot_security_state_crc32(const boot_security_state_t *state);
@@ -108,6 +112,7 @@ void boot_security_state_prepare(const boot_target_config_t *cfg,
 bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_base);
 bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata);
 bool boot_metadata_select_valid(const boot_target_config_t *cfg, boot_metadata_t *out_metadata);
+bool boot_metadata_read_copy(const boot_target_config_t *cfg, uint32_t copy_index, boot_metadata_t *out_metadata);
 bool boot_security_state_is_valid(const boot_target_config_t *cfg, const boot_security_state_t *state);
 bool boot_security_state_select_valid(const boot_target_config_t *cfg, boot_security_state_t *out_state);
 bool boot_image_crc_is_valid(const boot_metadata_t *metadata);

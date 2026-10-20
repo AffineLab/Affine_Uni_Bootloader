@@ -190,6 +190,7 @@ static boot_error_t bootloader_calculate_image_crc(bootloader_t *ctx,
                                                    uint32_t *out_crc32)
 {
     const uint8_t *image = (const uint8_t *)metadata->app_base;
+    const uint32_t ecc_errors = boot_platform_flash_ecc_error_count();
     uint32_t crc = 0U;
     uint32_t offset = 0U;
 
@@ -211,6 +212,11 @@ static boot_error_t bootloader_calculate_image_crc(bootloader_t *ctx,
     }
 
     *out_crc32 = crc;
+    if (boot_platform_flash_ecc_error_count() != ecc_errors)
+    {
+        /* Part of the image was cut short while being written. */
+        return BOOT_ERR_FLASH;
+    }
     return BOOT_ERR_NONE;
 }
 
@@ -287,20 +293,18 @@ static void bootloader_read_metadata(bootloader_t *ctx, boot_metadata_response_t
 
     for (uint32_t copy = 0U; copy < copy_count; ++copy)
     {
-        const boot_metadata_t *candidate = (const boot_metadata_t *)boot_metadata_copy_address(cfg, copy);
-
         boot_platform_watchdog_kick();
-        if (!boot_metadata_is_valid(cfg, candidate))
+        if (!boot_metadata_read_copy(cfg, copy, &rsp->metadata))
         {
             continue;
         }
 
         rsp->valid = 1U;
         rsp->selected_copy = copy;
-        rsp->metadata = *candidate;
-        rsp->app_valid = boot_image_vector_is_valid(cfg, candidate->app_base) ? 1U : 0U;
+        rsp->app_valid = boot_image_vector_is_valid(cfg, rsp->metadata.app_base) ? 1U : 0U;
         return;
     }
+    memset(&rsp->metadata, 0, sizeof(rsp->metadata));
 }
 
 static boot_error_t bootloader_clear_metadata(bootloader_t *ctx)

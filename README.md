@@ -72,6 +72,8 @@ Applications remain standard bare-metal images:
 
 The bootloader stores CRC-protected image metadata in a separate flash region near the end of the application slot. Targets with enough reserved metadata space keep two erase-unit metadata copies and use a valid copy on boot. On boot, the bootloader validates metadata, vector table addresses, and image CRC before jumping to the application.
 
+On STM32G431 and STM32H503 a read of flash whose programming was cut short by a power loss raises a flash ECC double error (NMI). The NMI handler clears and counts it, and every metadata, security-state and image read checks that count: the copy is skipped or the image fails verification, and the device stays in the bootloader instead of hanging in the NMI.
+
 STM32F072 is a Cortex-M0 target and has no VTOR register. Its bootloader copies the application vector table to the first `0xC0` bytes of SRAM and remaps SRAM at address zero before jumping, so STM32F072 applications must reserve `0x20000000`-`0x200000BF`. The provided `targets/stm32f072/STM32F072CBTX_APP.ld` starts application RAM at `0x200000C0`.
 
 Supported targets reserve 24 KiB for the bootloader:

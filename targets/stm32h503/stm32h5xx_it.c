@@ -1,12 +1,7 @@
 #include "main.h"
 #include "usb.h"
 
-void NMI_Handler(void)
-{
-    for (;;)
-    {
-    }
-}
+/* NMI_Handler (flash ECC errors) is in boot_platform_stm32h503.c. */
 
 void HardFault_Handler(void)
 {

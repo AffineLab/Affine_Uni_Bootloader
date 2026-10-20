@@ -42,6 +42,11 @@ void boot_platform_watchdog_kick(void)
 {
 }
 
+uint32_t boot_platform_flash_ecc_error_count(void)
+{
+    return 0U;
+}
+
 void boot_platform_flash_unlock(void)
 {
 }
