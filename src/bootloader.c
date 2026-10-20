@@ -74,6 +74,7 @@ static void bootloader_prepare_metadata(bootloader_t *ctx, boot_metadata_t *meta
 
     memset(metadata, 0, sizeof(*metadata));
     metadata->magic = BOOT_METADATA_MAGIC;
+    metadata->format_version = BOOT_METADATA_FORMAT_VERSION;
     metadata->target_id = cfg->target_id;
     metadata->board_id = cfg->board_id;
     metadata->flash_layout_id = cfg->flash_layout_id;

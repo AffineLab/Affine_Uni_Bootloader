@@ -5,6 +5,10 @@
 #include "boot_platform.h"
 #include "boot_protocol.h"
 
+/* Metadata sizes of the layouts that kept the security state right behind the
+ * record (rounded up to the write unit), from board identity binding on. */
+static const uint16_t g_legacy_metadata_sizes[] = {352U, 356U, 360U, 368U};
+
 bool boot_flash_read(uint32_t address, void *out, uint32_t length)
 {
     const uint32_t ecc_errors = boot_platform_flash_ecc_error_count();
@@ -163,6 +167,11 @@ bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata
         return false;
     }
 
+    if (metadata->format_version != BOOT_METADATA_FORMAT_VERSION)
+    {
+        return false;
+    }
+
     return (metadata->metadata_crc32 != 0U) && (metadata->metadata_crc32 == boot_metadata_crc32(metadata));
 }
 
@@ -197,13 +206,6 @@ bool boot_metadata_read_copy(const boot_target_config_t *cfg, uint32_t copy_inde
 
 bool boot_security_state_is_valid(const boot_target_config_t *cfg, const boot_security_state_t *state)
 {
-    const uint32_t state_end = boot_security_state_offset(cfg) + (uint32_t)sizeof(*state);
-
-    if (state_end > cfg->erase_size)
-    {
-        return false;
-    }
-
     if (state->magic != BOOT_SECURITY_STATE_MAGIC)
     {
         return false;
@@ -240,22 +242,37 @@ bool boot_security_state_is_valid(const boot_target_config_t *cfg, const boot_se
 bool boot_security_state_select_valid(const boot_target_config_t *cfg, boot_security_state_t *out_state)
 {
     const uint32_t copy_count = boot_metadata_copy_count(cfg);
+    const uint32_t align = (cfg->write_size == 0U) ? 4U : cfg->write_size;
+    const uint32_t legacy_count = (uint32_t)(sizeof(g_legacy_metadata_sizes) / sizeof(g_legacy_metadata_sizes[0]));
 
-    for (uint32_t copy = 0U; copy < copy_count; ++copy)
+    /* The current offset first, then where older layouts kept it. */
+    for (uint32_t slot = 0U; slot <= legacy_count; ++slot)
     {
-        boot_security_state_t candidate;
+        const uint32_t offset = (slot == 0U)
+            ? boot_security_state_offset(cfg)
+            : ((g_legacy_metadata_sizes[slot - 1U] + align - 1U) & ~(align - 1U));
 
-        if (!boot_flash_read(boot_security_state_copy_address(cfg, copy), &candidate, sizeof(candidate)) ||
-            !boot_security_state_is_valid(cfg, &candidate))
+        if ((offset + (uint32_t)sizeof(boot_security_state_t)) > cfg->erase_size)
         {
             continue;
         }
 
-        if (out_state != NULL)
+        for (uint32_t copy = 0U; copy < copy_count; ++copy)
         {
-            *out_state = candidate;
+            boot_security_state_t candidate;
+
+            if (!boot_flash_read(boot_metadata_copy_address(cfg, copy) + offset, &candidate, sizeof(candidate)) ||
+                !boot_security_state_is_valid(cfg, &candidate))
+            {
+                continue;
+            }
+
+            if (out_state != NULL)
+            {
+                *out_state = candidate;
+            }
+            return true;
         }
-        return true;
     }
 
     return false;

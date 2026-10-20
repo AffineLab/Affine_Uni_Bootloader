@@ -72,6 +72,8 @@ Applications remain standard bare-metal images:
 
 The bootloader stores CRC-protected image metadata in a separate flash region near the end of the application slot. Targets with enough reserved metadata space keep two erase-unit metadata copies and use a valid copy on boot. On boot, the bootloader validates metadata, vector table addresses, and image CRC before jumping to the application.
 
+The metadata record carries a `format_version` (`BOOT_METADATA_FORMAT_VERSION`); records from older layouts are ignored, so after a bootloader upgrade the device stays in the bootloader until the application is flashed again. The security state sits at a fixed offset (`0x200`) in each metadata erase unit, independent of the record layout; it is still found where older bootloaders kept it and moves to the fixed offset on the next write.
+
 On STM32G431 and STM32H503 a read of flash whose programming was cut short by a power loss raises a flash ECC double error (NMI). The NMI handler clears and counts it, and every metadata, security-state and image read checks that count: the copy is skipped or the image fails verification, and the device stays in the bootloader instead of hanging in the NMI.
 
 The application's bootloader request word is read and cleared once, at the very start of the bootloader, before the auto-boot window. A host that talks to the bootloader inside that window and then sends `BOOT_APP` no longer leaves the request behind for the application's next reset.
