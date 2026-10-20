@@ -68,6 +68,7 @@ affine_find_arm_none_eabi_tool(CMAKE_AR arm-none-eabi-ar)
 affine_find_arm_none_eabi_tool(CMAKE_RANLIB arm-none-eabi-ranlib)
 affine_find_arm_none_eabi_tool(CMAKE_OBJCOPY arm-none-eabi-objcopy)
 affine_find_arm_none_eabi_tool(CMAKE_SIZE arm-none-eabi-size)
+affine_find_arm_none_eabi_tool(AFFINE_ARM_NM arm-none-eabi-nm)
 
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(CMAKE_C_COMPILER_FORCED TRUE)

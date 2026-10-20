@@ -134,10 +134,11 @@ if(AFFINE_BUILD_STM32G431)
         ${STM32G431_TARGET_DIR}/usbd_desc.c
         ${STM32G431_TARGET_DIR}/usbd_cdc_acm_if.c
         ${STM32G431_TARGET_DIR}/boot_platform_stm32g431.c
+        ${STM32G431_TARGET_DIR}/boot_guard_stm32g431.c
         ${STM32G431_TARGET_DIR}/baremetal_runtime.c
         ${STM32G431_TARGET_DIR}/stm32g4xx_it.c
         ${STM32G431_CUBE_DIR}/Core/Src/system_stm32g4xx.c
-        ${STM32G431_CUBE_DIR}/Core/Startup/startup_stm32g431cbux.s
+        ${STM32G431_TARGET_DIR}/startup_stm32g431cbux_guarded.s
         ${STM32G431_COMPOSITE_DIR}/App/usb_device.c
         ${STM32G431_TARGET_DIR}/usbd_conf.c
         ${STM32G431_COMPOSITE_DIR}/Core/Src/usbd_core.c
@@ -214,11 +215,28 @@ if(AFFINE_BUILD_STM32G431)
         -Wl,-Map=${CMAKE_BINARY_DIR}/bootloader_stm32g431.map
     )
 
+    # The G431 bootloader is always guarded (boot_guard_stm32g431.c): the .bin
+    # is stamped with the length and sum the guard checks at every start, so a
+    # bootloader replaced in the field (g431_bl_updater) survives a power loss
+    # after its first page. An unstamped image boots without the check.
+    find_package(Python3 COMPONENTS Interpreter)
     if(CMAKE_OBJCOPY)
+        if(Python3_Interpreter_FOUND AND AFFINE_ARM_NM)
+            set(STM32G431_STAMP_COMMAND
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/patch_boot_guard.py
+                    $<TARGET_FILE:bootloader_stm32g431>
+                    ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
+                    --nm ${AFFINE_ARM_NM}
+                    --record-offset 0x1D8)
+        else()
+            message(WARNING "Python 3 or arm-none-eabi-nm missing: bootloader_stm32g431.bin stays unstamped and g431_bl_updater cannot be built")
+            set(STM32G431_STAMP_COMMAND)
+        endif()
         add_custom_command(TARGET bootloader_stm32g431 POST_BUILD
             COMMAND ${CMAKE_OBJCOPY} -O binary
                 $<TARGET_FILE:bootloader_stm32g431>
                 ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
+            ${STM32G431_STAMP_COMMAND}
             BYPRODUCTS ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
             COMMENT "Generating bootloader_stm32g431.bin"
         )

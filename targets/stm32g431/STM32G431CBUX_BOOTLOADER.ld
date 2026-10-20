@@ -20,6 +20,22 @@ SECTIONS
     . = ALIGN(4);
   } >FLASH
 
+  /* Vector table, guard record, guard, reset code and NMI handler: everything
+   * that has to work when only the first flash page has been written. See
+   * boot_guard_stm32g431.c. */
+  .guard :
+  {
+    . = ALIGN(4);
+    KEEP(*(.guard_info))
+    KEEP(*(.guard))
+    KEEP(*(.guard.*))
+    . = ALIGN(4);
+    _guard_end = .;
+  } >FLASH
+
+  ASSERT(SIZEOF(.isr_vector) == 0x1D8, "guard record is expected right behind the vector table")
+  ASSERT(_guard_end <= ORIGIN(FLASH) + 0x800, "boot guard does not fit into the first flash page")
+
   .text :
   {
     . = ALIGN(4);

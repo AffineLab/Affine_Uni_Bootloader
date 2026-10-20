@@ -80,6 +80,10 @@ The application's bootloader request word is read and cleared once, at the very 
 
 STM32F072 is a Cortex-M0 target and has no VTOR register. Its bootloader copies the application vector table to the first `0xC0` bytes of SRAM and remaps SRAM at address zero before jumping, so STM32F072 applications must reserve `0x20000000`-`0x200000BF`. The provided `targets/stm32f072/STM32F072CBTX_APP.ld` starts application RAM at `0x200000C0`.
 
+### STM32G431 boot guard and bootloader updater
+
+The STM32G431 bootloader always starts with a boot guard (`targets/stm32g431/boot_guard_stm32g431.c`, the port of the STM32F072 guard): the first 2 KiB page holds the vector table, the guard record, the guard, the reset code and the NMI handler. At every start the guard checks a length and sum, stamped into the `.bin` after linking by `tools/patch_boot_guard.py --record-offset 0x1D8` (the build does this automatically), over the rest of the bootloader. If the rest is incomplete it starts the ST system DFU loader at `0x1FFF0000`. An unstamped image (a debugger flash of the `.elf`) boots without the check.
+
 Supported targets reserve 24 KiB for the bootloader:
 
 | Target | Bootloader | Application slot | Metadata |
