@@ -412,6 +412,32 @@ static boot_error_t bootloader_store_metadata(bootloader_t *ctx,
     return BOOT_ERR_NONE;
 }
 
+/* Erases the application pages the open session will write. A failure closes
+ * the session, so no DATA lands on pages that were not erased. */
+static boot_error_t bootloader_erase_session_app(bootloader_t *ctx)
+{
+    const boot_target_config_t *cfg = boot_platform_target();
+    boot_error_t err;
+
+    /* A BOOT_APP still waiting to jump would land in the erased application. */
+    ctx->pending_action = BOOT_PENDING_ACTION_NONE;
+    ctx->status = BOOT_STATUS_ERASING;
+    boot_platform_flash_unlock();
+    err = bootloader_erase_range(ctx, cfg->app_base, ctx->session.expected_size, BOOT_OPERATION_ERASE_APP);
+    boot_platform_flash_lock();
+
+    if (err != BOOT_ERR_NONE)
+    {
+        memset(&ctx->session, 0, sizeof(ctx->session));
+        boot_security_reset();
+        return BOOT_ERR_FLASH;
+    }
+
+    ctx->session.app_erased = 1U;
+    ctx->status = BOOT_STATUS_RECEIVING;
+    return BOOT_ERR_NONE;
+}
+
 static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin_request_t *req)
 {
     const boot_target_config_t *cfg = boot_platform_target();
@@ -463,17 +489,6 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
         }
     }
 
-    ctx->status = BOOT_STATUS_ERASING;
-    boot_platform_flash_unlock();
-
-    if (bootloader_erase_range(ctx, cfg->app_base, req->image_size, BOOT_OPERATION_ERASE_APP) != BOOT_ERR_NONE)
-    {
-        boot_platform_flash_lock();
-        return BOOT_ERR_FLASH;
-    }
-
-    boot_platform_flash_lock();
-
     memset(&ctx->session, 0, sizeof(ctx->session));
     ctx->session.state = BOOT_SESSION_STATE_OPEN;
     ctx->session.version = req->version;
@@ -487,7 +502,35 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
     ctx->last_error = BOOT_ERR_NONE;
     memset(&ctx->metadata_shadow, 0, sizeof(ctx->metadata_shadow));
 
-    return BOOT_ERR_NONE;
+    /*
+     * A signed session erases nothing until SET_MANIFEST has checked the
+     * signature: otherwise any host could wipe the application with a BEGIN
+     * alone. An unsigned one has nothing more to prove.
+     */
+    if ((req->flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0U)
+    {
+        return BOOT_ERR_NONE;
+    }
+
+    return bootloader_erase_session_app(ctx);
+}
+
+static boot_error_t bootloader_set_manifest(bootloader_t *ctx, const boot_manifest_t *manifest)
+{
+    boot_error_t err;
+
+    if (ctx->session.state != BOOT_SESSION_STATE_OPEN)
+    {
+        return BOOT_ERR_BAD_STATE;
+    }
+
+    err = boot_security_set_manifest(manifest);
+    if ((err != BOOT_ERR_NONE) || (ctx->session.app_erased != 0U))
+    {
+        return err; /* a repeated manifest (lost answer) erases nothing again */
+    }
+
+    return bootloader_erase_session_app(ctx);
 }
 
 static boot_error_t bootloader_write_data(bootloader_t *ctx, const uint8_t *payload, uint32_t payload_len)
@@ -556,7 +599,7 @@ static boot_error_t bootloader_write_data(bootloader_t *ctx, const uint8_t *payl
     }
     chunk = chunk_buffer;
 
-    if (boot_security_note_plaintext(chunk, prefix->data_len) != BOOT_ERR_NONE)
+    if (ctx->session.app_erased == 0U)
     {
         return BOOT_ERR_BAD_STATE;
     }
@@ -568,6 +611,13 @@ static boot_error_t bootloader_write_data(bootloader_t *ctx, const uint8_t *payl
         return BOOT_ERR_FLASH;
     }
     boot_platform_flash_lock();
+
+    /* Hashed only once written, so a host retrying a failed chunk is not
+     * counted twice. */
+    if (boot_security_note_plaintext(chunk, prefix->data_len) != BOOT_ERR_NONE)
+    {
+        return BOOT_ERR_BAD_STATE;
+    }
 
     ctx->session.running_crc32 = boot_crc32_update(ctx->session.running_crc32, chunk, prefix->data_len);
     ctx->session.written_size += prefix->data_len;
@@ -723,7 +773,7 @@ static void bootloader_handle_frame(bootloader_t *ctx, const boot_decoded_frame_
             }
             else
             {
-                err = boot_security_set_manifest((const boot_manifest_t *)frame->payload);
+                err = bootloader_set_manifest(ctx, (const boot_manifest_t *)frame->payload);
             }
             break;
 

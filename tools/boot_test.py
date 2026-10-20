@@ -37,7 +37,7 @@ def require_pyserial() -> None:
 
 
 BOOT_FRAME_MAGIC = 0x42464641
-BOOT_PROTOCOL_VERSION = 0x00010005
+BOOT_PROTOCOL_VERSION = 0x00010006
 
 BOOT_OP_HELLO = 0x0001
 BOOT_OP_BEGIN = 0x0002
@@ -1302,8 +1302,9 @@ def flash_image(
             retries,
             retry_interval,
             label="SET_MANIFEST",
-            # The bootloader checks the RSA signature before it answers; a
-            # Cortex-M0 takes seconds over that.
+            # The bootloader checks the RSA signature, then erases the
+            # application pages (a signed BEGIN erases nothing), before it
+            # answers; a Cortex-M0 takes seconds over the signature.
             response_timeout=max(commit_timeout, SIGNATURE_CHECK_TIMEOUT),
         )
         sequence += 1

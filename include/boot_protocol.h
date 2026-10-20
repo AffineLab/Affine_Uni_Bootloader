@@ -7,7 +7,7 @@
 
 #include "boot_image.h"
 
-#define BOOT_PROTOCOL_VERSION      0x00010005UL
+#define BOOT_PROTOCOL_VERSION      0x00010006UL
 #define BOOT_FRAME_MAGIC           0x42464641UL
 #define BOOT_FRAME_MAX_PAYLOAD     512U
 #define BOOT_MANIFEST_MAGIC        0x4D464641UL

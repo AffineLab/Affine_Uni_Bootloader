@@ -49,7 +49,7 @@ Main commands:
 
 - `HELLO`: query protocol version, target ID, application base address, slot size, and maximum chunk size.
 - `GET_DEVICE_INFO`: query formal target, board, flash layout, memory geometry, write alignment, and capability fields.
-- `BEGIN`: start a firmware download session for a specific target, board, and flash layout, then erase the application pages covered by the image.
+- `BEGIN`: start a firmware download session for a specific target, board, and flash layout. An unsigned session erases the application pages covered by the image here; a signed one erases nothing yet.
 - `DATA`: write one aligned firmware chunk at the next expected offset.
 - `COMMIT`: verify the received image, read back flash CRC, and write committed metadata.
 - `ABORT`: cancel the active session.
@@ -57,7 +57,7 @@ Main commands:
 - `GET_DIAG`: query transport and frame decoder diagnostics.
 - `GET_METADATA`: query the selected valid metadata copy without running a full image CRC.
 - `CLEAR_METADATA`: erase application metadata copies and leave the device in bootloader mode. Persistent security state is preserved by default.
-- `SET_MANIFEST`: provide a signed firmware manifest after `BEGIN` and before `DATA`.
+- `SET_MANIFEST`: provide a signed firmware manifest after `BEGIN` and before `DATA`. Only once its signature checks out are the application pages erased, so a host without a valid signature cannot wipe the application. Resending the same manifest (a lost answer) is accepted without erasing again.
 - `VERIFY_IMAGE`: validate selected metadata, vector table, full image CRC, and security policy.
 - `REBOOT`: acknowledge the command and reset the MCU.
 - `BOOT_APP`: acknowledge the command, then jump to the committed application if it validates.

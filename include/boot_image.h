@@ -64,6 +64,7 @@ typedef struct
     uint32_t flags;
     uint32_t security_version;
     uint32_t min_source_version;
+    uint32_t app_erased; /* 1 once the pages this session writes are erased */
 } boot_session_t;
 
 typedef struct

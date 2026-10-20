@@ -156,6 +156,13 @@ boot_error_t boot_security_set_manifest(const boot_manifest_t *manifest)
         return BOOT_ERR_BAD_STATE;
     }
 
+    if (g_security.manifest_valid)
+    {
+        /* The host resending the accepted manifest because its answer got
+         * lost is fine; swapping in another one mid-session is not. */
+        return (memcmp(manifest, &g_security.manifest, sizeof(*manifest)) == 0) ? BOOT_ERR_NONE : BOOT_ERR_BAD_STATE;
+    }
+
     if (manifest->magic != BOOT_MANIFEST_MAGIC)
     {
         return BOOT_ERR_MANIFEST;
