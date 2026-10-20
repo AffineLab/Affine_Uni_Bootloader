@@ -43,6 +43,10 @@ typedef struct
     boot_pending_action_t pending_action;
     uint32_t pending_action_due_ms;
     uint32_t pending_app_base;
+    /* The application's request to stay in the bootloader. Read and cleared
+     * once in bootloader_init(), so a host that talks to us inside the
+     * auto-boot window cannot leave it behind for the application's next reset. */
+    bool boot_requested;
 } bootloader_t;
 
 void bootloader_init(bootloader_t *ctx);

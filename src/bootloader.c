@@ -885,6 +885,7 @@ void bootloader_init(bootloader_t *ctx)
     ctx->status = BOOT_STATUS_READY;
     ctx->operation = BOOT_OPERATION_NONE;
     ctx->pending_action = BOOT_PENDING_ACTION_NONE;
+    ctx->boot_requested = boot_platform_force_bootloader();
 }
 
 void bootloader_poll(bootloader_t *ctx)
@@ -954,7 +955,7 @@ void bootloader_try_boot_app(bootloader_t *ctx)
     boot_metadata_t metadata;
     boot_verify_image_response_t verify_rsp;
 
-    if (boot_platform_force_bootloader())
+    if (ctx->boot_requested)
     {
         return;
     }
