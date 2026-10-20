@@ -52,6 +52,9 @@ BOOT_OP_CLEAR_METADATA = 0x000A
 BOOT_OP_REBOOT = 0x000B
 BOOT_OP_VERIFY_IMAGE = 0x000C
 BOOT_OP_SET_MANIFEST = 0x000D
+
+# Longest a bootloader may take over one signature check (seconds).
+SIGNATURE_CHECK_TIMEOUT = 45.0
 BOOT_OP_GET_DEVICE_INFO = 0x000E
 BOOT_OP_RESPONSE = 0x8000
 
@@ -1299,6 +1302,9 @@ def flash_image(
             retries,
             retry_interval,
             label="SET_MANIFEST",
+            # The bootloader checks the RSA signature before it answers; a
+            # Cortex-M0 takes seconds over that.
+            response_timeout=max(commit_timeout, SIGNATURE_CHECK_TIMEOUT),
         )
         sequence += 1
         status, last_error, _, _, _, _, _, _ = parse_status_fields(manifest_rsp)
@@ -1341,7 +1347,8 @@ def flash_image(
             retries,
             retry_interval,
             label="COMMIT",
-            response_timeout=commit_timeout,
+            response_timeout=max(commit_timeout, SIGNATURE_CHECK_TIMEOUT) if (flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0
+            else commit_timeout,
         )
     except (TimeoutError, serial.SerialException, OSError) as exc:
         print(f"COMMIT response unavailable: {exc}; reconnecting to verify state", file=sys.stderr)
