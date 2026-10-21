@@ -91,8 +91,11 @@ Supported targets reserve 24 KiB for the bootloader:
 | Target | Bootloader | Application slot | Metadata |
 | --- | --- | --- | --- |
 | `STM32F072` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801F7FF` (102 KiB) | `0x0801F800`-`0x0801FFFF` |
-| `STM32G431` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801DFFF` (96 KiB) | `0x0801E000`-`0x0801FFFF` |
+| `STM32G431` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801CFFF` (92 KiB) | `0x0801E000`-`0x0801FFFF` |
 | `STM32H503` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`-`0x0801FFFF` |
+
+On STM32G431, `0x0801D000`-`0x0801DFFF` between the application slot and the metadata is the
+application's settings page (Mai_stm32): the bootloader never erases or writes it.
 
 For the H503 Keychip build, configure
 `-DAFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT=ON`. It advertises a distinct board and

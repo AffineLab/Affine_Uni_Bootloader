@@ -8,7 +8,9 @@ _Min_Stack_Size = 0x800;
 MEMORY
 {
   RAM   (xrw) : ORIGIN = 0x20000000, LENGTH = 32K
-  FLASH (rx)  : ORIGIN = 0x08006000, LENGTH = 96K
+  /* The bootloader's application slot; 0x0801D000-0x0801DFFF after it is the
+   * application settings page, then the bootloader metadata. */
+  FLASH (rx)  : ORIGIN = 0x08006000, LENGTH = 92K
 }
 
 SECTIONS
