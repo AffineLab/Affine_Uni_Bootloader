@@ -86,6 +86,8 @@ rm -rf "${BUILD_ROOT}"
 mkdir -p "${BUILD_ROOT}"
 
 python3 -m py_compile tools/boot_test.py
+# The UART options parse (a dry run opens no port).
+python3 tools/boot_test.py COM0 probe --dry-run --transport uart --baud 115200
 git diff --check -- . ':!third_party'
 
 run_manifest_smoke

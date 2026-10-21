@@ -38,7 +38,7 @@ targets/                  MCU-specific platform implementations and linker scrip
 targets/common/           Shared target-side helpers for flash range checks and USB transport
 third_party/              Vendored STM32Cube HAL/CMSIS/startup and ST USB middleware subsets
 cmake/toolchains/         Cross-compilation toolchain files
-tools/boot_test.py        Host-side USB CDC smoke test and flashing utility
+tools/boot_test.py        Host-side smoke test and flashing utility (USB CDC or UART)
 ```
 
 ## Protocol Summary
@@ -225,6 +225,17 @@ py tools\boot_test.py COM3 flash firmware.bin --app-jump --run --wait-app
 py tools\boot_test.py COM5 clear-metadata
 py tools\boot_test.py COM5 reboot
 ```
+
+Over a UART (a board built with `AFFINE_BOOT_TRANSPORT=uart`, through a USB-UART adapter or a network serial bridge):
+
+```powershell
+py tools\boot_test.py COM7 probe --transport uart
+py tools\boot_test.py COM7 flash firmware.bin --transport uart --baud 115200 --run
+py tools\boot_test.py COM7 flash firmware.bin --transport uart --wait-hello 10
+py tools\boot_test.py socket://192.168.1.20:4000 probe --transport uart
+```
+
+`--transport uart` skips all USB re-enumeration waits (the port stays the same across resets), uses `--baud` as the line rate, adds the wire time to each response timeout, retries 5 times by default, and resyncs on stray bytes before an answer. `--wait-hello SECONDS` sends HELLO every 50 ms until the bootloader answers: start it, then reset a board that has no BOOT-REQUEST line, to catch the auto-boot window. See `docs/uart-transport.md`.
 
 Offline manifest generation for the G431 target:
 
