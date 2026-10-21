@@ -7,6 +7,10 @@
 #include "boot_security.h"
 
 #define BOOT_DEFERRED_ACTION_DELAY_MS 100U
+/* Longest quiet gap inside one frame. Well above the gaps of a frame sent in
+ * one go (USB packets, a UART bridge forwarding them), well below any host's
+ * retry timeout. */
+#define BOOT_DECODER_IDLE_RESET_MS    100U
 #define BOOT_CRC_PROGRESS_CHUNK       1024U
 #define BOOT_METADATA_INVALID_COPY    0xFFFFFFFFUL
 
@@ -944,6 +948,16 @@ void bootloader_poll(bootloader_t *ctx)
     boot_platform_transport_poll();
     boot_platform_watchdog_kick();
 
+    /* A partial frame that went quiet lost bytes on the way: drop it, so the
+     * host's retry is not read as its missing tail. */
+    if (boot_decoder_in_frame(&ctx->decoder) &&
+        ((boot_platform_millis() - ctx->last_rx_ms) >= BOOT_DECODER_IDLE_RESET_MS))
+    {
+        boot_decoder_reset(&ctx->decoder);
+        ctx->decode_error_count++;
+        ctx->last_decode_error = BOOT_ERR_FRAME_TIMEOUT;
+    }
+
     if (ctx->pending_action == BOOT_PENDING_ACTION_NONE)
     {
         return;
@@ -972,21 +986,76 @@ void bootloader_poll(bootloader_t *ctx)
     ctx->pending_action = BOOT_PENDING_ACTION_NONE;
 }
 
+static bool bootloader_opcode_is_read_only(uint16_t opcode)
+{
+    switch ((boot_opcode_t)opcode)
+    {
+        case BOOT_OP_HELLO:
+        case BOOT_OP_GET_STATUS:
+        case BOOT_OP_GET_DIAG:
+        case BOOT_OP_GET_METADATA:
+        case BOOT_OP_GET_DEVICE_INFO:
+        case BOOT_OP_VERIFY_IMAGE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/*
+ * Hosts retry by resending the same frame with the same sequence. When the
+ * frame did run and only its answer got lost (a UART drops bytes, USB does
+ * not), running a DATA again fails on its offset and a COMMIT on the closed
+ * session. So an exact repeat of the DATA or COMMIT that ran last, and
+ * succeeded, is answered with the status and not run again. A failed one runs
+ * again: the retry may succeed. Every other command runs as usual (BEGIN just
+ * starts the session again; SET_MANIFEST accepts its own repeat).
+ */
+static bool bootloader_frame_is_retry(const bootloader_t *ctx, const boot_decoded_frame_t *frame)
+{
+    return ctx->retry_valid &&
+           (frame->header.opcode == ctx->retry_opcode) &&
+           (frame->header.sequence == ctx->retry_sequence) &&
+           (frame->header.payload_crc32 == ctx->retry_payload_crc32);
+}
+
+static void bootloader_note_frame_run(bootloader_t *ctx, const boot_decoded_frame_t *frame)
+{
+    const uint16_t opcode = frame->header.opcode;
+
+    if (((opcode == BOOT_OP_DATA) || (opcode == BOOT_OP_COMMIT)) && (ctx->last_error == BOOT_ERR_NONE))
+    {
+        ctx->retry_valid = true;
+        ctx->retry_opcode = opcode;
+        ctx->retry_sequence = frame->header.sequence;
+        ctx->retry_payload_crc32 = frame->header.payload_crc32;
+    }
+    else if (!bootloader_opcode_is_read_only(opcode))
+    {
+        ctx->retry_valid = false;
+    }
+}
+
 void bootloader_receive_bytes(bootloader_t *ctx, const uint8_t *data, size_t length)
 {
     boot_decoded_frame_t frame;
     size_t index = 0U;
 
+    if (length > 0U)
+    {
+        ctx->last_rx_ms = boot_platform_millis();
+    }
+
     while (index < length)
     {
+        /* A decode error is the transport's, not a command's: it shows in
+         * GET_DIAG and leaves status and last_error alone, and the decoder
+         * carries on with the next byte. */
         const boot_error_t err = boot_decoder_consume(&ctx->decoder, &data[index], 1U, &frame);
         if (err != BOOT_ERR_NONE)
         {
             ctx->decode_error_count++;
             ctx->last_decode_error = err;
-            ctx->last_error = err;
-            ctx->status = BOOT_STATUS_ERROR;
-            break;
         }
 
         if (frame.frame_ready)
@@ -994,7 +1063,16 @@ void bootloader_receive_bytes(bootloader_t *ctx, const uint8_t *data, size_t len
             ctx->frame_ok_count++;
             ctx->last_decoded_opcode = frame.header.opcode;
             ctx->last_decoded_sequence = frame.header.sequence;
-            bootloader_handle_frame(ctx, &frame);
+            if (bootloader_frame_is_retry(ctx, &frame))
+            {
+                ctx->last_error = BOOT_ERR_NONE;
+                bootloader_send_status(ctx, frame.header.opcode, frame.header.sequence);
+            }
+            else
+            {
+                bootloader_handle_frame(ctx, &frame);
+                bootloader_note_frame_run(ctx, &frame);
+            }
         }
 
         ++index;

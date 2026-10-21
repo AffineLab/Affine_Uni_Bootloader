@@ -152,6 +152,8 @@ BOOT_ERROR_NAMES = {
     14: "SIGNATURE",
     15: "ROLLBACK",
     16: "DECRYPTION",
+    17: "UPGRADE_PATH",
+    18: "FRAME_TIMEOUT",
 }
 
 

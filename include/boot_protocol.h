@@ -68,7 +68,8 @@ typedef enum
     BOOT_ERR_SIGNATURE,
     BOOT_ERR_ROLLBACK,
     BOOT_ERR_DECRYPTION,
-    BOOT_ERR_UPGRADE_PATH
+    BOOT_ERR_UPGRADE_PATH,
+    BOOT_ERR_FRAME_TIMEOUT /* GET_DIAG only: a partial frame went quiet and was dropped */
 } boot_error_t;
 
 typedef struct
@@ -236,6 +237,7 @@ typedef struct
 
 uint32_t boot_crc32_update(uint32_t seed, const void *data, size_t length);
 void boot_decoder_reset(boot_frame_decoder_t *decoder);
+bool boot_decoder_in_frame(const boot_frame_decoder_t *decoder);
 boot_error_t boot_decoder_consume(boot_frame_decoder_t *decoder,
                                   const uint8_t *data,
                                   size_t length,

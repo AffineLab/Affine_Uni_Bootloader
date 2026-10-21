@@ -47,6 +47,14 @@ typedef struct
      * once in bootloader_init(), so a host that talks to us inside the
      * auto-boot window cannot leave it behind for the application's next reset. */
     bool boot_requested;
+    /* When the transport last delivered bytes, for the decoder's idle timeout. */
+    uint32_t last_rx_ms;
+    /* The last DATA or COMMIT that ran and succeeded; an identical frame is a
+     * host retry after a lost answer. */
+    bool retry_valid;
+    uint16_t retry_opcode;
+    uint16_t retry_sequence;
+    uint32_t retry_payload_crc32;
 } bootloader_t;
 
 void bootloader_init(bootloader_t *ctx);
