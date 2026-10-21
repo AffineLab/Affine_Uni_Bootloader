@@ -184,6 +184,18 @@ cmake -S . -B build-stm32f072 `
 ninja -C build-stm32f072 bootloader_stm32f072
 ```
 
+STM32F072 over a USART instead of USB (`AFFINE_BOOT_TRANSPORT=uart`, USART1 on PA9/PA10 at 115200 8N1 by default, see `targets/stm32f072/board_pins.h` and `docs/uart-transport.md`):
+
+```powershell
+cmake -S . -B build-stm32f072-uart `
+  -G Ninja `
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake `
+  -DAFFINE_BUILD_STM32F072=ON `
+  -DAFFINE_BOOT_TRANSPORT=uart
+
+ninja -C build-stm32f072-uart bootloader_stm32f072
+```
+
 Example STM32G431 build:
 
 ```powershell

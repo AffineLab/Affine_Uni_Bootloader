@@ -4,6 +4,11 @@
 
 PCD_HandleTypeDef hpcd_USB_FS;
 
+void USB_IRQHandler(void)
+{
+    HAL_PCD_IRQHandler(&hpcd_USB_FS);
+}
+
 void MX_USB_PCD_Init(void)
 {
     hpcd_USB_FS.Instance = USB;

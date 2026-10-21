@@ -6,16 +6,14 @@
 #include "stm32f0xx_hal.h"
 #include "stm32f0xx_hal_flash.h"
 #include "stm32f0xx_hal_flash_ex.h"
-#include "usbd_cdc_acm_if.h"
 
 #include "targets/common/boot_target_common.h"
 #include "targets/stm32f072/board_config.h"
+#include "targets/stm32f072/board_pins.h"
 
 #define F072_BOOT_REQUEST_SIGNATURE   0x424F4F54UL
 #define F072_BOOT_REQUEST_ADDRESS     (0x20000000UL + 0x3F00UL)
 #define F072_VECTOR_TABLE_WORDS       48U
-
-static boot_target_usb_transport_t g_usb_transport;
 
 const boot_target_config_t *boot_platform_target(void)
 {
@@ -27,49 +25,49 @@ uint32_t boot_platform_millis(void)
     return HAL_GetTick();
 }
 
+#if defined(F072_BOOT_REQUEST_GPIO)
+/* Runs before HAL_Init(), from bootloader_init(): registers only. */
+static bool boot_f072_request_pin_active(void)
+{
+    const uint32_t shift = 2U * F072_BOOT_REQUEST_PIN;
+    uint32_t level;
+
+    RCC->AHBENR |= F072_BOOT_REQUEST_GPIO_EN;
+    (void)RCC->AHBENR;
+    F072_BOOT_REQUEST_GPIO->MODER &= ~(3UL << shift); /* input */
+    /* Pulled to the inactive level, so an unconnected pin asks for nothing. */
+    F072_BOOT_REQUEST_GPIO->PUPDR = (F072_BOOT_REQUEST_GPIO->PUPDR & ~(3UL << shift)) |
+                                    ((F072_BOOT_REQUEST_ACTIVE_HIGH ? 2UL : 1UL) << shift);
+    for (volatile uint32_t i = 0U; i < 200U; ++i) /* let the pull settle */
+    {
+    }
+    level = (F072_BOOT_REQUEST_GPIO->IDR >> F072_BOOT_REQUEST_PIN) & 1U;
+    return level == (F072_BOOT_REQUEST_ACTIVE_HIGH ? 1U : 0U);
+}
+#endif
+
 bool boot_platform_force_bootloader(void)
 {
     volatile uint32_t *request = (volatile uint32_t *)F072_BOOT_REQUEST_ADDRESS;
+    bool requested = false;
 
     if (*request == F072_BOOT_REQUEST_SIGNATURE)
     {
         *request = 0U;
         __DSB();
         __ISB();
-        return true;
+        requested = true;
     }
 
-    return false;
-}
+#if defined(F072_BOOT_REQUEST_GPIO)
+    /* A master MCU holding the BOOT-REQUEST line through reset. */
+    if (boot_f072_request_pin_active())
+    {
+        requested = true;
+    }
+#endif
 
-void boot_stm32f072_usb_diag_note_rx(uint32_t length)
-{
-    boot_target_usb_transport_note_rx(&g_usb_transport, length, HAL_GetTick());
-}
-
-void boot_stm32f072_usb_diag_note_rx_overflow(void)
-{
-    boot_target_usb_transport_note_rx_overflow(&g_usb_transport);
-}
-
-void boot_stm32f072_usb_diag_note_tx_complete(uint32_t length)
-{
-    boot_target_usb_transport_note_tx_complete(&g_usb_transport, length, HAL_GetTick());
-}
-
-void boot_platform_transport_send(const uint8_t *data, size_t length)
-{
-    boot_target_usb_transport_send(&g_usb_transport, data, length);
-}
-
-void boot_platform_transport_poll(void)
-{
-    boot_target_usb_transport_poll(&g_usb_transport, CDC_IsBusy, CDC_Transmit, USBD_OK, HAL_GetTick());
-}
-
-bool boot_platform_transport_get_diag(boot_diag_response_t *out_diag)
-{
-    return boot_target_usb_transport_get_diag(&g_usb_transport, out_diag);
+    return requested;
 }
 
 void boot_platform_watchdog_kick(void)
