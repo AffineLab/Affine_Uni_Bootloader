@@ -101,6 +101,9 @@ cmake_configure_build \
     "${BUILD_ROOT}/stm32g431" \
     -DAFFINE_BUILD_STM32G431 \
     bootloader_stm32g431
+# The updater embeds the stamped, guarded bootloader built above and refuses
+# an unstamped one, so building it also checks the stamping.
+ninja -C "${BUILD_ROOT}/stm32g431" g431_bl_updater
 
 cmake_configure_build \
     STM32H503 \

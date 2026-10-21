@@ -243,10 +243,29 @@ if(AFFINE_BUILD_STM32G431)
     endif()
 
     # --- G431 bootloader self-update app (reflashes the bootloader region) ---
+    # It carries the bootloader built above, stamped; embed_bl_image.py refuses
+    # an image without a stamped guard. AFFINE_G431_BL_UPDATER_IMAGE selects
+    # another stamped image instead (a released bootloader, say).
     set(STM32G431_UPDATER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/stm32g431_blupdater")
+    set(STM32G431_UPDATER_IMAGE_DIR "${CMAKE_BINARY_DIR}/g431_bl_image")
+    set(AFFINE_G431_BL_UPDATER_IMAGE "" CACHE FILEPATH "Stamped bootloader .bin for g431_bl_updater (default: this build's)")
+    if(AFFINE_G431_BL_UPDATER_IMAGE)
+        set(STM32G431_UPDATER_IMAGE_SOURCE "${AFFINE_G431_BL_UPDATER_IMAGE}")
+        set(STM32G431_UPDATER_IMAGE_DEPENDS "${AFFINE_G431_BL_UPDATER_IMAGE}")
+    else()
+        set(STM32G431_UPDATER_IMAGE_SOURCE "${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin")
+        set(STM32G431_UPDATER_IMAGE_DEPENDS bootloader_stm32g431 "${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin")
+    endif()
+    add_custom_command(
+        OUTPUT ${STM32G431_UPDATER_IMAGE_DIR}/v3_bl_image.c ${STM32G431_UPDATER_IMAGE_DIR}/v3_bl_image.h
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_bl_image.py
+            ${STM32G431_UPDATER_IMAGE_SOURCE} ${STM32G431_UPDATER_IMAGE_DIR} --record-offset 0x1D8
+        DEPENDS ${STM32G431_UPDATER_IMAGE_DEPENDS} ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_bl_image.py
+        COMMENT "Embedding the stamped bootloader image into g431_bl_updater"
+    )
     add_executable(g431_bl_updater EXCLUDE_FROM_ALL
         ${STM32G431_UPDATER_DIR}/main.c
-        ${STM32G431_UPDATER_DIR}/v3_bl_image.c
+        ${STM32G431_UPDATER_IMAGE_DIR}/v3_bl_image.c
         ${STM32G431_TARGET_DIR}/baremetal_runtime.c
         ${STM32G431_CUBE_DIR}/Core/Startup/startup_stm32g431cbux.s
         ${STM32G431_CUBE_DIR}/Core/Src/system_stm32g4xx.c
@@ -261,6 +280,7 @@ if(AFFINE_BUILD_STM32G431)
         ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr_ex.c
     )
     target_include_directories(g431_bl_updater PRIVATE
+        ${STM32G431_UPDATER_IMAGE_DIR}
         ${STM32G431_UPDATER_DIR}
         ${STM32G431_TARGET_DIR}
         ${STM32G431_CUBE_DIR}/Core/Inc

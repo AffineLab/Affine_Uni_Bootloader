@@ -84,6 +84,8 @@ STM32F072 is a Cortex-M0 target and has no VTOR register. Its bootloader copies 
 
 The STM32G431 bootloader always starts with a boot guard (`targets/stm32g431/boot_guard_stm32g431.c`, the port of the STM32F072 guard): the first 2 KiB page holds the vector table, the guard record, the guard, the reset code and the NMI handler. At every start the guard checks a length and sum, stamped into the `.bin` after linking by `tools/patch_boot_guard.py --record-offset 0x1D8` (the build does this automatically), over the rest of the bootloader. If the rest is incomplete it starts the ST system DFU loader at `0x1FFF0000`. An unstamped image (a debugger flash of the `.elf`) boots without the check.
 
+`g431_bl_updater` (`targets/stm32g431_blupdater`) is an application that replaces the bootloader in the field. The build generates its embedded image from the stamped bootloader (`tools/embed_bl_image.py`; `-DAFFINE_G431_BL_UPDATER_IMAGE=<stamped .bin>` embeds another one), and both the generator and the updater refuse an image without a stamped guard. It writes the first page first, then the others, verifying each page. Power lost after the first page leaves a board that comes up in the ST DFU loader and can be written again. Power lost while the first page itself is being erased or written (some tens of ms) still needs BOOT0 or SWD: single-bank G431 flash leaves no way around that window.
+
 Supported targets reserve 24 KiB for the bootloader:
 
 | Target | Bootloader | Application slot | Metadata |
