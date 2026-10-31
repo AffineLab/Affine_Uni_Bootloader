@@ -86,7 +86,7 @@ BOOT_FLAG_NAMES = {
 APP_CMD_JUMP_TO_BOOTLOADER = 0x25
 DEFAULT_USB_VID = 0xAFF1
 DEFAULT_G431_BOOTLOADER_PID = 0x52B0
-DEFAULT_APP_PID = 0x52A6
+DEFAULT_APP_PIDS = (0x52A5, 0x52A6)  # Mai controller role 1P / 2P
 
 TARGET_DEFAULTS = {
     0x46303732: {
@@ -456,10 +456,15 @@ def find_port_info(port_name: str) -> object | None:
     return None
 
 
-def port_matches(port_info: object, vid: int | None, pid: int | None, serial_number: str | None) -> bool:
+def port_matches(
+    port_info: object,
+    vid: int | None,
+    pid: int | tuple[int, ...] | None,
+    serial_number: str | None,
+) -> bool:
     if vid is not None and getattr(port_info, "vid", None) != vid:
         return False
-    if pid is not None and getattr(port_info, "pid", None) != pid:
+    if pid is not None and getattr(port_info, "pid", None) not in (pid if isinstance(pid, tuple) else (pid,)):
         return False
     if serial_number:
         port_serial = getattr(port_info, "serial_number", None)
@@ -470,7 +475,7 @@ def port_matches(port_info: object, vid: int | None, pid: int | None, serial_num
 
 def wait_for_usb_port(
     vid: int | None,
-    pid: int | None,
+    pid: int | tuple[int, ...] | None,
     serial_number: str | None,
     timeout: float,
     label: str,
@@ -1666,7 +1671,12 @@ def main() -> int:
         type=parse_int_auto,
         help="bootloader USB PID used for wait matching; defaults from --target-id or G431",
     )
-    parser.add_argument("--app-pid", type=parse_int_auto, default=DEFAULT_APP_PID, help="application USB PID used for wait matching")
+    parser.add_argument(
+        "--app-pid",
+        type=parse_int_auto,
+        default=DEFAULT_APP_PIDS,
+        help="application USB PID used for wait matching (default: either Mai role, 0x52A5 or 0x52A6)",
+    )
     parser.add_argument(
         "--no-wait-bootloader",
         dest="wait_bootloader",
