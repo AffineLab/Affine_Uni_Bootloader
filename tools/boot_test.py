@@ -498,6 +498,38 @@ def wait_for_usb_port(
     raise RuntimeError(f"timed out waiting for {label} USB port, last seen: {last_seen}")
 
 
+def wait_after_reboot(
+    vid: int | None,
+    bootloader_pid: int | None,
+    app_pid: int | tuple[int, ...] | None,
+    serial_number: str | None,
+    timeout: float,
+) -> None:
+    """Reports where a reboot ended up: the application, or the bootloader if it stays there.
+
+    The bootloader enumerates first and hands over to a valid application after
+    its auto-boot window, so seeing it means nothing until the timeout has passed.
+    """
+    deadline = time.monotonic() + timeout
+    bootloader_port = None
+
+    while True:
+        bootloader_port = None
+        for port_info in list_ports.comports():
+            if port_matches(port_info, vid, app_pid, serial_number):
+                print(f"application port: {describe_port(port_info)}")
+                return
+            if port_matches(port_info, vid, bootloader_pid, serial_number):
+                bootloader_port = port_info
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+
+    if bootloader_port is None:
+        raise RuntimeError(f"no USB port came back within {timeout:g} s of the reboot")
+    print(f"bootloader port: {describe_port(bootloader_port)} (stayed in the bootloader)")
+
+
 def resolve_wait_serial(port_name: str, explicit_serial: str | None) -> str | None:
     if explicit_serial:
         return explicit_serial
@@ -1682,7 +1714,7 @@ def main() -> int:
         dest="wait_bootloader",
         action="store_false",
         default=True,
-        help="do not wait for the bootloader COM port after app-jump",
+        help="do not wait for the COM port to come back after app-jump or reboot",
     )
     parser.add_argument("--wait-app", action="store_true", help="wait for the application COM port after --run")
     parser.add_argument("--dry-run", action="store_true", help="build and print frames without opening the port")
@@ -1926,12 +1958,12 @@ def main() -> int:
             if opcode == BOOT_OP_REBOOT and args.wait_bootloader and not uart:
                 port.close()
                 time.sleep(args.reconnect_delay)
-                wait_for_usb_port(
+                wait_after_reboot(
                     args.usb_vid,
                     args.bootloader_pid,
+                    args.app_pid,
                     device_serial,
                     args.wait_timeout,
-                    "bootloader",
                 )
                 return 0
 
