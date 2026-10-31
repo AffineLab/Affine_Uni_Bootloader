@@ -920,17 +920,19 @@ def send_frame_and_read(
     for attempt in range(1, retries + 1):
         if clear_input:
             port.reset_input_buffer()
-        print(f"{tag} Tx[{attempt}/{retries}]: {format_hex(tx_frame)}")
-        port.write(tx_frame)
-        port.flush()
 
         wait = (response_timeout if response_timeout is not None else (previous_timeout or 1.0)) + response_allowance(
             port, len(tx_frame)
         )
-        deadline = time.monotonic() + wait
         mismatch: str | None = None
         try:
+            # Before the write: setting the timeout is a USB control transfer on
+            # usbser, which fails while the frame has the bootloader erasing flash.
             port.timeout = wait
+            print(f"{tag} Tx[{attempt}/{retries}]: {format_hex(tx_frame)}")
+            port.write(tx_frame)
+            port.flush()
+            deadline = time.monotonic() + wait
             while True:
                 header, rx_payload, rx_frame = read_frame(port, deadline)
                 _, rx_opcode, rx_sequence, _, _, _ = header
