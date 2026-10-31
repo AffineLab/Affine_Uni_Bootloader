@@ -104,6 +104,12 @@ cmake -S . -B "${BUILD_ROOT}/stm32f072-uart" -G Ninja \
     -DAFFINE_BUILD_STM32F072=ON -DAFFINE_BOOT_TRANSPORT=uart
 ninja -C "${BUILD_ROOT}/stm32f072-uart" bootloader_stm32f072
 
+# USB CDC and a USART at once (AFFINE_BOOT_TRANSPORT=dual).
+cmake -S . -B "${BUILD_ROOT}/stm32f072-dual" -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake \
+    -DAFFINE_BUILD_STM32F072=ON -DAFFINE_BOOT_TRANSPORT=dual
+ninja -C "${BUILD_ROOT}/stm32f072-dual" bootloader_stm32f072
+
 cmake_configure_build \
     STM32G431 \
     "${BUILD_ROOT}/stm32g431" \
@@ -121,5 +127,6 @@ cmake_configure_build \
 
 check_size STM32F072 "${BUILD_ROOT}/stm32f072/bootloader_stm32f072.bin"
 check_size STM32F072-UART "${BUILD_ROOT}/stm32f072-uart/bootloader_stm32f072.bin"
+check_size STM32F072-DUAL "${BUILD_ROOT}/stm32f072-dual/bootloader_stm32f072.bin"
 check_size STM32G431 "${BUILD_ROOT}/stm32g431/bootloader_stm32g431.bin"
 check_size STM32H503 "${BUILD_ROOT}/stm32h503/bootloader_stm32h503.bin"

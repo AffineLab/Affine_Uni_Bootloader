@@ -76,7 +76,7 @@ static int8_t CDC_Control(uint8_t cdc_ch, uint8_t cmd, uint8_t *pbuf, uint16_t l
 static int8_t CDC_Receive(uint8_t cdc_ch, uint8_t *Buf, uint32_t *Len)
 {
     boot_stm32f072_usb_diag_note_rx(*Len);
-    boot_stm32f072_receive_isr(Buf, *Len);
+    boot_stm32f072_receive_isr(BOOT_RX_CHANNEL_USB, Buf, *Len);
     USBD_CDC_SetRxBuffer(cdc_ch, &hUsbDevice, Buf);
     USBD_CDC_ReceivePacket(cdc_ch, &hUsbDevice);
     return (int8_t)USBD_OK;

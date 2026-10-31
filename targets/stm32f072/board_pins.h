@@ -9,7 +9,7 @@
 #include "stm32f0xx.h"
 
 /*
- * UART transport (AFFINE_BOOT_TRANSPORT=uart): USART1 on PA9 (TX) / PA10 (RX),
+ * UART transport (AFFINE_BOOT_TRANSPORT=uart or dual): USART1 on PA9 (TX) / PA10 (RX),
  * AF1, 115200 8N1. Per ST AN2606 these are also pins the MCU's ROM loader
  * listens on, so a master wired here can also reach the boot guard's ROM
  * fallback (not verified on a board). USART2 is the other supported instance.

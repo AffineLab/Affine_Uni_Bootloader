@@ -196,6 +196,8 @@ cmake -S . -B build-stm32f072-uart `
 ninja -C build-stm32f072-uart bootloader_stm32f072
 ```
 
+With `-DAFFINE_BOOT_TRANSPORT=dual` the STM32F072 bootloader listens on USB CDC and the USART at once. The first channel to deliver a frame header with a valid CRC is used until the next reset; the other one is ignored. Check first that nothing else on the board is wired to the USART pins: the bootloader drives TX while it runs.
+
 Example STM32G431 build:
 
 ```powershell
