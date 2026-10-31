@@ -1003,7 +1003,7 @@ def send_frame_and_read(
 
 def send_simple_app_jump(port: serial.Serial, retries: int, retry_interval: float) -> None:
     frame = build_app_command(APP_CMD_JUMP_TO_BOOTLOADER)
-    ack = bytes([0xFF, APP_CMD_JUMP_TO_BOOTLOADER, 0x01, 0x01, 0x26])
+    ack = build_app_command(APP_CMD_JUMP_TO_BOOTLOADER, b"\x01")
     disconnect_markers = (
         "device does not recognize the command",
         "device attached to the system is not functioning",
@@ -1018,26 +1018,28 @@ def send_simple_app_jump(port: serial.Serial, retries: int, retry_interval: floa
         deadline = time.monotonic() + max(float(port.timeout or 0.0), 0.5)
         reply = bytearray()
         while time.monotonic() < deadline:
+            # Only what has arrived: a blocking read for more than the ack is
+            # still waiting when the board resets, and may lose it to the error.
             try:
-                chunk = port.read(32)
+                waiting = port.in_waiting
+                chunk = port.read(waiting) if waiting else b""
             except serial.SerialException as exc:
                 message = str(exc).lower()
                 if any(marker in message for marker in disconnect_markers):
+                    got = f", got {format_hex(reply)}" if reply else ""
                     print(
-                        f"app-jump Rx[{attempt}/{retries}]: device disconnected during jump, assuming success"
+                        f"app-jump Rx[{attempt}/{retries}]: no ack (older firmware or port closed){got}; "
+                        "device disconnected during jump, assuming success"
                     )
                     return
                 raise
             if chunk:
                 reply.extend(chunk)
                 if ack in reply:
-                    print(f"app-jump Rx[{attempt}/{retries}]: {format_hex(ack)}")
+                    print(f"app-jump Rx[{attempt}/{retries}]: {format_hex(ack)} (ack received)")
                     return
                 continue
-            time.sleep(0.01)
-        if ack in reply:
-            print(f"app-jump Rx[{attempt}/{retries}]: {format_hex(ack)}")
-            return
+            time.sleep(0.005)
         if attempt < retries:
             time.sleep(retry_interval)
             continue
