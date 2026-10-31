@@ -37,7 +37,7 @@ def require_pyserial() -> None:
 
 
 BOOT_FRAME_MAGIC = 0x42464641
-BOOT_PROTOCOL_VERSION = 0x00010004
+BOOT_PROTOCOL_VERSION = 0x00010006
 
 BOOT_OP_HELLO = 0x0001
 BOOT_OP_BEGIN = 0x0002
@@ -52,12 +52,15 @@ BOOT_OP_CLEAR_METADATA = 0x000A
 BOOT_OP_REBOOT = 0x000B
 BOOT_OP_VERIFY_IMAGE = 0x000C
 BOOT_OP_SET_MANIFEST = 0x000D
+
+# Longest a bootloader may take over one signature check (seconds).
+SIGNATURE_CHECK_TIMEOUT = 45.0
 BOOT_OP_GET_DEVICE_INFO = 0x000E
 BOOT_OP_RESPONSE = 0x8000
 
 BOOT_FRAME_MAX_PAYLOAD = 512
 BOOT_MANIFEST_MAGIC = 0x4D464641
-BOOT_MANIFEST_VERSION = 2
+BOOT_MANIFEST_VERSION = 3
 BOOT_MANIFEST_SIZE = 364
 BOOT_MANIFEST_NONCE_OFFSET = 72
 BOOT_DATA_PREFIX_SIZE = 8
@@ -149,6 +152,8 @@ BOOT_ERROR_NAMES = {
     14: "SIGNATURE",
     15: "ROLLBACK",
     16: "DECRYPTION",
+    17: "UPGRADE_PATH",
+    18: "FRAME_TIMEOUT",
 }
 
 
@@ -225,6 +230,8 @@ def build_signed_manifest(
     image_crc: int,
     version: int,
     flags: int,
+    security_version: int,
+    min_source_version: int,
     key_id: int,
     nonce: bytes,
     private_key: pathlib.Path,
@@ -243,8 +250,8 @@ def build_signed_manifest(
         key_id,
         hashlib.sha256(image).digest(),
         nonce,
-        0,
-        0,
+        security_version,
+        min_source_version,
         0,
         0,
         0,
@@ -271,6 +278,7 @@ def parse_manifest_header(manifest: bytes) -> dict[str, int]:
         flags,
         key_id,
     ) = struct.unpack_from("<10I", manifest, 0)
+    security_version, min_source_version = struct.unpack_from("<2I", manifest, 88)
     return {
         "magic": magic,
         "manifest_version": manifest_version,
@@ -282,6 +290,8 @@ def parse_manifest_header(manifest: bytes) -> dict[str, int]:
         "firmware_version": firmware_version,
         "flags": flags,
         "key_id": key_id,
+        "security_version": security_version,
+        "min_source_version": min_source_version,
     }
 
 
@@ -322,21 +332,64 @@ def read_exact(port: serial.Serial, size: int) -> bytes:
     return bytes(data)
 
 
-def read_frame(port: serial.Serial) -> tuple[tuple[int, int, int, int, int, int], bytes, bytes]:
-    header = read_exact(port, 20)
-    fields = struct.unpack("<IHHIII", header)
-    magic, opcode, sequence, payload_len, payload_crc, header_crc = fields
+def read_frame(
+    port: serial.Serial,
+    deadline: float | None = None,
+) -> tuple[tuple[int, int, int, int, int, int], bytes, bytes]:
+    """Reads one frame, skipping anything in front of it.
 
-    if magic != BOOT_FRAME_MAGIC:
-        raise ValueError(f"bad magic 0x{magic:08X}")
-    if crc32(header[:16]) != header_crc:
-        raise ValueError("bad header crc")
+    Over a UART an answer can follow stray bytes (line noise, a glitch while
+    the pins come up): look for the frame magic byte by byte, and treat a
+    header whose CRC does not check out as a false start one byte later. A
+    frame with a damaged payload raises ValueError. deadline (time.monotonic())
+    bounds the whole search; without it only each read waits up to
+    port.timeout.
+    """
+    magic_bytes = struct.pack("<I", BOOT_FRAME_MAGIC)
+    buf = bytearray()
+    skipped = 0
 
-    payload = read_exact(port, payload_len)
-    if crc32(payload) != payload_crc:
-        raise ValueError("bad payload crc")
+    def need(size: int) -> None:
+        while len(buf) < size:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting for a frame, got {len(buf)} bytes")
+            chunk = port.read(size - len(buf))
+            if not chunk:
+                raise TimeoutError(f"timed out waiting for {size} bytes, got {len(buf)}")
+            buf.extend(chunk)
 
-    return fields, payload, header + payload
+    while True:
+        need(4)
+        if bytes(buf[:4]) != magic_bytes:
+            del buf[0]
+            skipped += 1
+            continue
+        need(20)
+        header = bytes(buf[:20])
+        fields = struct.unpack("<IHHIII", header)
+        _, _, _, payload_len, payload_crc, header_crc = fields
+        if crc32(header[:16]) != header_crc or payload_len > BOOT_FRAME_MAX_PAYLOAD:
+            del buf[0]
+            skipped += 1
+            continue
+        need(20 + payload_len)
+        payload = bytes(buf[20:20 + payload_len])
+        if skipped:
+            print(f"skipped {skipped} stray bytes before the frame", file=sys.stderr)
+        if crc32(payload) != payload_crc:
+            raise ValueError("bad payload crc")
+        return fields, payload, header + payload
+
+
+def response_allowance(port: serial.Serial, tx_size: int) -> float:
+    """Seconds a request and the longest answer spend on a UART (10 bits a byte).
+
+    Added to every response timeout: about 70 ms at 115200 for a full DATA
+    frame. USB CDC gets the same, as the port carries the nominal --baud
+    there too; harmless, if more than it needs.
+    """
+    baud = getattr(port, "baudrate", 0) or 0
+    return ((tx_size + 20 + BOOT_FRAME_MAX_PAYLOAD) * 10.0 / baud) if baud > 0 else 0.0
 
 
 def open_serial_port(
@@ -350,6 +403,15 @@ def open_serial_port(
     last_error: Exception | None = None
     for attempt in range(1, open_retries + 1):
         try:
+            if "://" in port_name:
+                # A pyserial URL: socket://host:port for a network serial
+                # bridge, rfc2217://host:port, ...
+                return serial.serial_for_url(
+                    port_name,
+                    baudrate=baud,
+                    timeout=timeout,
+                    write_timeout=timeout,
+                )
             return serial.Serial(
                 port_name,
                 baud,
@@ -537,6 +599,59 @@ def decode_status(payload: bytes) -> str:
 
 
 def decode_metadata(payload: bytes) -> str:
+    if len(payload) == 420:
+        fields = struct.unpack("<21I32s16s256s8I", payload)
+        (
+            valid,
+            copy_count,
+            selected_copy,
+            app_valid,
+            security_state_valid,
+            magic,
+            target_id,
+            board_id,
+            flash_layout_id,
+            version,
+            image_size,
+            image_crc32,
+            app_base,
+            flags,
+            metadata_crc32,
+            key_id,
+            security_version,
+            min_source_version,
+            *rest,
+        ) = fields
+        image_sha256, nonce, signature = rest[3:6]
+        security_fields = rest[6:]
+        selected = "none" if selected_copy == 0xFFFFFFFF else str(selected_copy)
+
+        return (
+            f"valid={valid}, "
+            f"copy_count={copy_count}, "
+            f"selected_copy={selected}, "
+            f"app_vector_valid={app_valid}, "
+            f"security_state_valid={security_state_valid}, "
+            f"magic=0x{magic:08X}, "
+            f"target=0x{target_id:08X}, "
+            f"board=0x{board_id:08X}, "
+            f"layout=0x{flash_layout_id:08X}, "
+            f"version={version}, "
+            f"security_version={security_version}, "
+            f"min_source_version={min_source_version}, "
+            f"image_size={image_size}, "
+            f"image_crc32=0x{image_crc32:08X}, "
+            f"app_base=0x{app_base:08X}, "
+            f"flags=0x{flags:08X}({format_bit_names(flags, BOOT_FLAG_NAMES)}), "
+            f"metadata_crc32=0x{metadata_crc32:08X}, "
+            f"key_id={key_id}, "
+            f"image_sha256={image_sha256.hex()}, "
+            f"nonce={nonce.hex()}, "
+            f"signature_present={any(signature)}, "
+            f"security_magic=0x{security_fields[0]:08X}, "
+            f"rollback_floor={security_fields[5]}"
+        )
+
     if len(payload) == 80:
         fields = struct.unpack("<20I", payload)
         valid, copy_count, selected_copy, app_valid = fields[:4]
@@ -809,39 +924,40 @@ def send_frame_and_read(
         port.write(tx_frame)
         port.flush()
 
+        wait = (response_timeout if response_timeout is not None else (previous_timeout or 1.0)) + response_allowance(
+            port, len(tx_frame)
+        )
+        deadline = time.monotonic() + wait
+        mismatch: str | None = None
         try:
-            if response_timeout is not None:
-                port.timeout = response_timeout
-            header, rx_payload, rx_frame = read_frame(port)
-        except TimeoutError as exc:
-            print(f"{tag} timeout on attempt {attempt}: {exc}", file=sys.stderr)
+            port.timeout = wait
+            while True:
+                header, rx_payload, rx_frame = read_frame(port, deadline)
+                _, rx_opcode, rx_sequence, _, _, _ = header
+                print(f"{tag} Rx[{attempt}/{retries}]: {format_hex(rx_frame)}")
+                if rx_opcode == expected_opcode and rx_sequence == sequence:
+                    return header, rx_payload
+                # A late answer to an earlier request: keep listening.
+                mismatch = (
+                    f"{tag} unexpected opcode 0x{rx_opcode:04X}/sequence {rx_sequence}, "
+                    f"expected 0x{expected_opcode:04X}/{sequence}"
+                )
+                print(mismatch, file=sys.stderr)
+        except (TimeoutError, ValueError) as exc:
+            # A damaged answer is as good as a lost one: send the same frame
+            # again (the bootloader answers a repeated DATA/COMMIT without
+            # running it twice).
+            print(f"{tag} no usable answer on attempt {attempt}: {exc}", file=sys.stderr)
             if attempt < retries:
                 time.sleep(retry_interval)
                 continue
+            if mismatch is not None:
+                raise RuntimeError(mismatch) from exc
+            if isinstance(exc, ValueError):
+                raise TimeoutError(str(exc)) from exc
             raise
         finally:
             port.timeout = previous_timeout
-
-        _, rx_opcode, rx_sequence, _, _, _ = header
-        print(f"{tag} Rx[{attempt}/{retries}]: {format_hex(rx_frame)}")
-
-        if rx_opcode != expected_opcode:
-            if attempt < retries:
-                time.sleep(retry_interval)
-                continue
-            raise RuntimeError(
-                f"{tag} unexpected opcode 0x{rx_opcode:04X}, expected 0x{expected_opcode:04X}"
-            )
-
-        if rx_sequence != sequence:
-            if attempt < retries:
-                time.sleep(retry_interval)
-                continue
-            raise RuntimeError(
-                f"{tag} unexpected sequence {rx_sequence}, expected {sequence}"
-            )
-
-        return header, rx_payload
 
     raise RuntimeError(f"{tag} exhausted retries")
 
@@ -889,6 +1005,39 @@ def send_simple_app_jump(port: serial.Serial, retries: int, retry_interval: floa
         raise RuntimeError(
             f"app-jump failed, got {format_hex(reply) if reply else 'no response'}"
         )
+
+
+def wait_for_bootloader_hello(port: serial.Serial, seconds: float, interval: float = 0.05) -> None:
+    """Sends HELLO every interval until the bootloader answers.
+
+    For a UART board without a BOOT-REQUEST line: start this, then reset the
+    board. The first HELLO inside the bootloader's auto-boot window keeps it
+    in the bootloader (any valid frame does).
+    """
+    frame = build_frame(BOOT_OP_HELLO, 0, b"")
+    deadline = time.monotonic() + seconds
+    previous_timeout = port.timeout
+    attempts = 0
+
+    print(f"sending HELLO for up to {seconds:g} s, reset the board now")
+    port.timeout = interval
+    try:
+        while time.monotonic() < deadline:
+            port.reset_input_buffer()
+            port.write(frame)
+            port.flush()
+            attempts += 1
+            try:
+                header, payload, _ = read_frame(port, time.monotonic() + interval + response_allowance(port, len(frame)))
+            except (TimeoutError, ValueError):
+                continue
+            if header[1] == (BOOT_OP_HELLO | BOOT_OP_RESPONSE):
+                print(f"bootloader answered HELLO #{attempts}: {decode_hello(payload)}")
+                return
+    finally:
+        port.timeout = previous_timeout
+
+    raise RuntimeError(f"no answer to HELLO within {seconds:g} s ({attempts} sent)")
 
 
 def best_effort_abort(port: serial.Serial, sequence: int, retries: int, retry_interval: float) -> None:
@@ -970,6 +1119,8 @@ def flash_image(
     image_path: pathlib.Path,
     version: int,
     flags: int,
+    security_version: int,
+    min_source_version: int,
     retries: int,
     retry_interval: float,
     open_retries: int,
@@ -986,6 +1137,7 @@ def flash_image(
     encrypt_key: bytes | None,
     expected_board_id: int | None,
     expected_flash_layout_id: int | None,
+    pre_encrypted: bool = False,
 ) -> int:
     sequence = 1
 
@@ -1088,9 +1240,16 @@ def flash_image(
     image_crc = crc32(image)
     manifest_payload: bytes | None = None
     upload_image = image
+    if pre_encrypted and manifest_path is None:
+        raise RuntimeError("--pre-encrypted needs the --manifest that was made with the image")
     if manifest_path is not None:
         manifest_payload = manifest_path.read_bytes()
         manifest_info = parse_manifest_header(manifest_payload)
+        if pre_encrypted:
+            # The file is ciphertext: the plaintext CRC and the version can only
+            # come from the signed manifest. The bootloader checks both.
+            image_crc = manifest_info["image_crc32"]
+            version = manifest_info["firmware_version"]
         if manifest_info["magic"] != BOOT_MANIFEST_MAGIC:
             raise RuntimeError("manifest magic mismatch")
         if manifest_info["manifest_version"] != BOOT_MANIFEST_VERSION:
@@ -1143,6 +1302,8 @@ def flash_image(
             image_crc,
             version,
             flags,
+            security_version,
+            min_source_version,
             manifest_key_id,
             manifest_nonce,
             manifest_key,
@@ -1153,7 +1314,8 @@ def flash_image(
     if (flags & BOOT_FLAG_ENCRYPTED_IMAGE) != 0:
         if manifest_payload is None:
             raise RuntimeError("--manifest or --manifest-key is required for encrypted updates")
-        upload_image = aes128_ctr_crypt(image, encrypt_key or BOOT_DEV_AES128_KEY, manifest_nonce)
+        if not pre_encrypted:
+            upload_image = aes128_ctr_crypt(image, encrypt_key or BOOT_DEV_AES128_KEY, manifest_nonce)
 
     print(
         f"image={image_path.name}, original_size={original_size}, padded_size={len(image)}, "
@@ -1163,8 +1325,16 @@ def flash_image(
         f"write_align={write_align}, chunk={usable_chunk}"
     )
 
+    if manifest_payload is not None:
+        _minfo = parse_manifest_header(manifest_payload)
+        begin_security_version = _minfo["security_version"]
+        begin_min_source_version = _minfo["min_source_version"]
+    else:
+        begin_security_version = security_version
+        begin_min_source_version = min_source_version
+
     begin_payload = struct.pack(
-        "<7I",
+        "<9I",
         target_id,
         board_id,
         flash_layout_id,
@@ -1172,6 +1342,8 @@ def flash_image(
         image_crc,
         version,
         flags,
+        begin_security_version,
+        begin_min_source_version,
     )
     try:
         _, begin_rsp = send_frame_and_read(
@@ -1218,6 +1390,10 @@ def flash_image(
             retries,
             retry_interval,
             label="SET_MANIFEST",
+            # The bootloader checks the RSA signature, then erases the
+            # application pages (a signed BEGIN erases nothing), before it
+            # answers; a Cortex-M0 takes seconds over the signature.
+            response_timeout=max(commit_timeout, SIGNATURE_CHECK_TIMEOUT),
         )
         sequence += 1
         status, last_error, _, _, _, _, _, _ = parse_status_fields(manifest_rsp)
@@ -1260,7 +1436,8 @@ def flash_image(
             retries,
             retry_interval,
             label="COMMIT",
-            response_timeout=commit_timeout,
+            response_timeout=max(commit_timeout, SIGNATURE_CHECK_TIMEOUT) if (flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0
+            else commit_timeout,
         )
     except (TimeoutError, serial.SerialException, OSError) as exc:
         print(f"COMMIT response unavailable: {exc}; reconnecting to verify state", file=sys.stderr)
@@ -1333,14 +1510,21 @@ def send_command(
         port.write(tx_frame)
         port.flush()
 
+        previous_timeout = port.timeout
         try:
-            header, rx_payload, rx_frame = read_frame(port)
-        except TimeoutError as exc:
-            print(f"timeout on attempt {attempt}: {exc}", file=sys.stderr)
+            wait = (previous_timeout or 1.0) + response_allowance(port, len(tx_frame))
+            port.timeout = wait
+            # The deadline also ends a resync over a line that never goes
+            # quiet, e.g. an application printing on the same USART.
+            header, rx_payload, rx_frame = read_frame(port, time.monotonic() + wait)
+        except (TimeoutError, ValueError) as exc:
+            print(f"no usable answer on attempt {attempt}: {exc}", file=sys.stderr)
             if attempt < retries:
                 time.sleep(retry_interval)
                 continue
             return 1
+        finally:
+            port.timeout = previous_timeout
 
         _, rx_opcode, rx_sequence, _, _, _ = header
         print(f"Rx[{attempt}/{retries}]: {format_hex(rx_frame)}")
@@ -1376,8 +1560,11 @@ def send_command(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Affine USB-CDC bootloader smoke test tool")
-    parser.add_argument("port", help="serial port, for example COM5")
+    parser = argparse.ArgumentParser(description="Affine bootloader smoke test and flashing tool (USB CDC or UART)")
+    parser.add_argument(
+        "port",
+        help="serial port, for example COM5; with --transport uart also a pyserial URL such as socket://host:port",
+    )
     parser.add_argument(
         "command",
         choices=[
@@ -1396,13 +1583,33 @@ def main() -> int:
         help="command to send",
     )
     parser.add_argument("image", nargs="?", help="application .bin image path for flash")
-    parser.add_argument("--baud", type=int, default=115200, help="serial baud rate placeholder")
+    parser.add_argument(
+        "--transport",
+        choices=["usb", "uart"],
+        default="usb",
+        help="usb: the bootloader's own USB CDC port, which re-enumerates on every reset; "
+        "uart: a serial line (USB-UART adapter, a master's bridge) that stays put",
+    )
+    parser.add_argument("--baud", type=int, default=115200, help="UART baud rate (ignored by USB CDC)")
+    parser.add_argument(
+        "--wait-hello",
+        type=float,
+        metavar="SECONDS",
+        help="uart: send HELLO until the bootloader answers (reset the board meanwhile), then run the command",
+    )
     parser.add_argument("--timeout", type=float, default=1.0, help="read timeout in seconds")
     parser.add_argument("--interval", type=float, default=0.1, help="delay between probe commands")
-    parser.add_argument("--retries", type=int, default=1, help="retry count for each command")
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=None,
+        help="tries for each command (default: 1 over usb, 5 over uart)",
+    )
     parser.add_argument("--retry-interval", type=float, default=0.1, help="delay between retries")
     parser.add_argument("--open-retries", type=int, default=10, help="serial open retry count")
     parser.add_argument("--version", type=lambda value: int(value, 0), default=1, help="firmware version for BEGIN")
+    parser.add_argument("--security-version", type=lambda value: int(value, 0), default=0, help="security version (SVN) driving anti-rollback; manifest v3")
+    parser.add_argument("--min-source-version", type=lambda value: int(value, 0), default=0, help="minimum installed FEATURE version required before this image may apply (staged upgrade path); manifest v3")
     parser.add_argument("--target-id", type=lambda value: int(value, 0), help="target ID for offline manifest dry-run generation")
     parser.add_argument("--board-id", type=lambda value: int(value, 0), help="expected or offline board ID")
     parser.add_argument("--flash-layout-id", type=lambda value: int(value, 0), help="expected or offline flash layout ID")
@@ -1436,6 +1643,16 @@ def main() -> int:
     parser.add_argument("--write-align", type=lambda value: int(value, 0), default=0, help="override flash write alignment; 0 auto-detects known targets")
     parser.add_argument("--begin-timeout", type=float, default=6.0, help="response timeout for BEGIN in seconds")
     parser.add_argument("--commit-timeout", type=float, default=3.0, help="response timeout for COMMIT in seconds")
+    parser.add_argument(
+        "--encrypted-out",
+        type=pathlib.Path,
+        help="with --dry-run --encrypted: write the encrypted image here, for flashing later with --pre-encrypted",
+    )
+    parser.add_argument(
+        "--pre-encrypted",
+        action="store_true",
+        help="the image file is already encrypted (made with --encrypted-out); needs its --manifest, no keys",
+    )
     parser.add_argument("--run", action="store_true", help="boot the application after COMMIT")
     parser.add_argument("--app-jump", action="store_true", help="send Mai app command 0x25 to reboot into bootloader before flashing")
     parser.add_argument("--reconnect-delay", type=float, default=1.2, help="delay after app-jump reset before reopening the bootloader port")
@@ -1458,6 +1675,14 @@ def main() -> int:
     parser.add_argument("--wait-app", action="store_true", help="wait for the application COM port after --run")
     parser.add_argument("--dry-run", action="store_true", help="build and print frames without opening the port")
     args = parser.parse_args()
+
+    uart = args.transport == "uart"
+    if args.retries is None:
+        args.retries = 5 if uart else 1
+    if args.wait_hello is not None and not uart:
+        parser.error("--wait-hello needs --transport uart (a USB port only appears once the bootloader runs)")
+    if uart and args.app_jump:
+        parser.error("--app-jump is the Mai application's USB command; over a UART reset the board or use --wait-hello")
 
     if args.bootloader_pid is None:
         args.bootloader_pid = target_default_bootloader_pid(args.target_id or 0) or DEFAULT_G431_BOOTLOADER_PID
@@ -1528,11 +1753,19 @@ def main() -> int:
                     crc32(image),
                     args.version,
                     dry_flags,
+                    args.security_version,
+                    args.min_source_version,
                     args.manifest_key_id,
                     args.manifest_nonce,
                     args.manifest_key,
                 )
                 args.manifest_out.write_bytes(manifest)
+            if args.encrypted_out is not None:
+                if not args.encrypted:
+                    parser.error("--encrypted-out needs --encrypted")
+                args.encrypted_out.write_bytes(
+                    aes128_ctr_crypt(image, args.encrypt_key or BOOT_DEV_AES128_KEY, args.manifest_nonce)
+                )
             print(
                 f"flash image={image_path}, original_size={original_size}, "
                 f"padded_size={len(image)}, write_align={write_align}, "
@@ -1560,7 +1793,9 @@ def main() -> int:
                 return result
         return 0
 
-    device_serial = resolve_wait_serial(args.port, args.usb_serial)
+    # A UART stays the same port across resets: nothing re-enumerates, so
+    # there is nothing to wait for.
+    device_serial = None if uart else resolve_wait_serial(args.port, args.usb_serial)
 
     if args.command == "flash" and args.app_jump:
         with open_serial_port(
@@ -1594,9 +1829,16 @@ def main() -> int:
         time.sleep(0.2)
         port.reset_input_buffer()
 
+        if args.wait_hello is not None and args.command != "app-jump":
+            try:
+                wait_for_bootloader_hello(port, args.wait_hello)
+            except RuntimeError as exc:
+                print(exc, file=sys.stderr)
+                return 1
+
         if args.command == "app-jump":
             send_simple_app_jump(port, args.retries, args.retry_interval)
-            if args.wait_bootloader:
+            if args.wait_bootloader and not uart:
                 port.close()
                 wait_for_usb_port(
                     args.usb_vid,
@@ -1619,6 +1861,8 @@ def main() -> int:
                     pathlib.Path(args.image),
                     args.version,
                     flash_flags,
+                    args.security_version,
+                    args.min_source_version,
                     args.retries,
                     args.retry_interval,
                     args.open_retries,
@@ -1635,8 +1879,11 @@ def main() -> int:
                     args.encrypt_key,
                     args.board_id,
                     args.flash_layout_id,
+                    pre_encrypted=args.pre_encrypted,
                 )
-                if result == 0 and args.run and args.wait_app:
+                if result == 0 and args.run and args.wait_app and uart:
+                    print("--wait-app: no USB port to wait for over a UART", file=sys.stderr)
+                elif result == 0 and args.run and args.wait_app:
                     port.close()
                     wait_for_usb_port(
                         args.usb_vid,
@@ -1664,7 +1911,7 @@ def main() -> int:
             if result != 0:
                 return result
 
-            if opcode == BOOT_OP_REBOOT and args.wait_bootloader:
+            if opcode == BOOT_OP_REBOOT and args.wait_bootloader and not uart:
                 port.close()
                 time.sleep(args.reconnect_delay)
                 wait_for_usb_port(

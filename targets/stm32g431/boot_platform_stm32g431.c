@@ -126,6 +126,38 @@ void boot_platform_watchdog_kick(void)
 #endif
 }
 
+/* Counted by NMI_Handler, see boot_platform_flash_ecc_error_count(). Also read
+ * by the boot guard. */
+volatile uint32_t g_boot_flash_ecc_errors;
+
+uint32_t boot_platform_flash_ecc_error_count(void)
+{
+    return g_boot_flash_ecc_errors;
+}
+
+/*
+ * A flash ECC double error (a read of a double-word whose programming was cut
+ * short) raises the NMI. Clear it and return: the read completes with unusable
+ * data, and the caller sees the count change. Anything else stays fatal.
+ *
+ * In the first flash page with the boot guard, which reads the whole
+ * bootloader before anything else and must survive such an error.
+ */
+__attribute__((section(".guard.NMI_Handler")))
+void NMI_Handler(void)
+{
+    if (__HAL_FLASH_GET_FLAG(FLASH_FLAG_ECCD))
+    {
+        __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ECCD);
+        g_boot_flash_ecc_errors++;
+        return;
+    }
+
+    for (;;)
+    {
+    }
+}
+
 void boot_platform_flash_unlock(void)
 {
     HAL_FLASH_Unlock();

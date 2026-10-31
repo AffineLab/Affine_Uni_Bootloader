@@ -2,7 +2,20 @@
 
 #include <string.h>
 
+#include "boot_platform.h"
 #include "boot_protocol.h"
+
+/* Metadata sizes of the layouts that kept the security state right behind the
+ * record (rounded up to the write unit), from board identity binding on. */
+static const uint16_t g_legacy_metadata_sizes[] = {352U, 356U, 360U, 368U};
+
+bool boot_flash_read(uint32_t address, void *out, uint32_t length)
+{
+    const uint32_t ecc_errors = boot_platform_flash_ecc_error_count();
+
+    memcpy(out, (const void *)address, length);
+    return boot_platform_flash_ecc_error_count() == ecc_errors;
+}
 
 uint32_t boot_metadata_crc32(const boot_metadata_t *metadata)
 {
@@ -82,15 +95,25 @@ static bool boot_address_in_sram(const boot_target_config_t *cfg, uint32_t addr)
 
 static bool boot_address_in_app_slot(const boot_target_config_t *cfg, uint32_t addr)
 {
-    return (addr >= cfg->app_base) && (addr < cfg->metadata_base);
+    return (addr >= cfg->app_base) &&
+           ((addr - cfg->app_base) < cfg->app_size);
 }
 
 bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_base)
 {
-    const uint32_t *vt = (const uint32_t *)app_base;
-    const uint32_t initial_sp = vt[0];
-    const uint32_t reset_handler = vt[1];
-    const uint32_t reset_handler_addr = reset_handler & ~1UL;
+    uint32_t vt[2];
+    uint32_t initial_sp;
+    uint32_t reset_handler;
+    uint32_t reset_handler_addr;
+
+    if (!boot_flash_read(app_base, vt, sizeof(vt)))
+    {
+        return false;
+    }
+
+    initial_sp = vt[0];
+    reset_handler = vt[1];
+    reset_handler_addr = reset_handler & ~1UL;
 
     if (!boot_address_in_sram(cfg, initial_sp))
     {
@@ -107,7 +130,7 @@ bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_ba
 
 bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata)
 {
-    const uint32_t slot_size = cfg->metadata_base - cfg->app_base;
+    const uint32_t slot_size = cfg->app_size;
 
     if (metadata->magic != BOOT_METADATA_MAGIC)
     {
@@ -144,6 +167,11 @@ bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata
         return false;
     }
 
+    if (metadata->format_version != BOOT_METADATA_FORMAT_VERSION)
+    {
+        return false;
+    }
+
     return (metadata->metadata_crc32 != 0U) && (metadata->metadata_crc32 == boot_metadata_crc32(metadata));
 }
 
@@ -153,17 +181,16 @@ bool boot_metadata_select_valid(const boot_target_config_t *cfg, boot_metadata_t
 
     for (uint32_t copy = 0U; copy < copy_count; ++copy)
     {
-        const uint32_t address = boot_metadata_copy_address(cfg, copy);
-        const boot_metadata_t *candidate = (const boot_metadata_t *)address;
+        boot_metadata_t candidate;
 
-        if (!boot_metadata_is_valid(cfg, candidate))
+        if (!boot_metadata_read_copy(cfg, copy, &candidate))
         {
             continue;
         }
 
         if (out_metadata != NULL)
         {
-            *out_metadata = *candidate;
+            *out_metadata = candidate;
         }
         return true;
     }
@@ -171,15 +198,14 @@ bool boot_metadata_select_valid(const boot_target_config_t *cfg, boot_metadata_t
     return false;
 }
 
+bool boot_metadata_read_copy(const boot_target_config_t *cfg, uint32_t copy_index, boot_metadata_t *out_metadata)
+{
+    return boot_flash_read(boot_metadata_copy_address(cfg, copy_index), out_metadata, sizeof(*out_metadata)) &&
+           boot_metadata_is_valid(cfg, out_metadata);
+}
+
 bool boot_security_state_is_valid(const boot_target_config_t *cfg, const boot_security_state_t *state)
 {
-    const uint32_t state_end = boot_security_state_offset(cfg) + (uint32_t)sizeof(*state);
-
-    if (state_end > cfg->erase_size)
-    {
-        return false;
-    }
-
     if (state->magic != BOOT_SECURITY_STATE_MAGIC)
     {
         return false;
@@ -216,22 +242,37 @@ bool boot_security_state_is_valid(const boot_target_config_t *cfg, const boot_se
 bool boot_security_state_select_valid(const boot_target_config_t *cfg, boot_security_state_t *out_state)
 {
     const uint32_t copy_count = boot_metadata_copy_count(cfg);
+    const uint32_t align = (cfg->write_size == 0U) ? 4U : cfg->write_size;
+    const uint32_t legacy_count = (uint32_t)(sizeof(g_legacy_metadata_sizes) / sizeof(g_legacy_metadata_sizes[0]));
 
-    for (uint32_t copy = 0U; copy < copy_count; ++copy)
+    /* The current offset first, then where older layouts kept it. */
+    for (uint32_t slot = 0U; slot <= legacy_count; ++slot)
     {
-        const uint32_t address = boot_security_state_copy_address(cfg, copy);
-        const boot_security_state_t *candidate = (const boot_security_state_t *)address;
+        const uint32_t offset = (slot == 0U)
+            ? boot_security_state_offset(cfg)
+            : ((g_legacy_metadata_sizes[slot - 1U] + align - 1U) & ~(align - 1U));
 
-        if (!boot_security_state_is_valid(cfg, candidate))
+        if ((offset + (uint32_t)sizeof(boot_security_state_t)) > cfg->erase_size)
         {
             continue;
         }
 
-        if (out_state != NULL)
+        for (uint32_t copy = 0U; copy < copy_count; ++copy)
         {
-            *out_state = *candidate;
+            boot_security_state_t candidate;
+
+            if (!boot_flash_read(boot_metadata_copy_address(cfg, copy) + offset, &candidate, sizeof(candidate)) ||
+                !boot_security_state_is_valid(cfg, &candidate))
+            {
+                continue;
+            }
+
+            if (out_state != NULL)
+            {
+                *out_state = candidate;
+            }
+            return true;
         }
-        return true;
     }
 
     return false;
@@ -240,7 +281,10 @@ bool boot_security_state_select_valid(const boot_target_config_t *cfg, boot_secu
 bool boot_image_crc_is_valid(const boot_metadata_t *metadata)
 {
     const uint8_t *image = (const uint8_t *)metadata->app_base;
-    return boot_crc32_update(0U, image, metadata->image_size) == metadata->image_crc32;
+    const uint32_t ecc_errors = boot_platform_flash_ecc_error_count();
+    const uint32_t crc = boot_crc32_update(0U, image, metadata->image_size);
+
+    return (boot_platform_flash_ecc_error_count() == ecc_errors) && (crc == metadata->image_crc32);
 }
 
 bool boot_image_is_committed_and_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata)

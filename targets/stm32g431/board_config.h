@@ -8,6 +8,10 @@ static const boot_target_config_t g_target_config = {
     .flash_base = 0x08000000UL,
     .flash_size = 128UL * 1024UL,
     .app_base = 0x08006000UL,
+    /* 92 KiB: 0x0801D000-0x0801DFFF, between the slot and the metadata, is the
+     * application's settings page (Mai_stm32 flash.c), which an update must
+     * never erase. Images fit in 92 KiB, so the layout ID stays the same. */
+    .app_size = 0x00017000UL,
     .metadata_base = 0x0801E000UL,
     .metadata_size = 0x2000UL,
     .sram_base = 0x20000000UL,

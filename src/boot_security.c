@@ -34,9 +34,15 @@ static void boot_security_manifest_digest(const boot_manifest_t *manifest,
 static bool boot_security_manifest_signature_is_valid(const boot_manifest_t *manifest)
 {
     uint8_t digest[BOOT_SHA256_DIGEST_SIZE];
+    const uint8_t *modulus = boot_manifest_modulus_for_key_id(manifest->key_id);
+
+    if (modulus == (const uint8_t *)0)
+    {
+        return false;
+    }
 
     boot_security_manifest_digest(manifest, digest);
-    return boot_rsa2048_pkcs1v15_sha256_verify(g_boot_manifest_rsa2048_modulus,
+    return boot_rsa2048_pkcs1v15_sha256_verify(modulus,
                                                manifest->signature,
                                                digest);
 }
@@ -55,6 +61,8 @@ static void boot_security_manifest_from_metadata(const boot_metadata_t *metadata
     manifest->firmware_version = metadata->version;
     manifest->flags = metadata->flags;
     manifest->key_id = metadata->key_id;
+    manifest->security_version = metadata->security_version;
+    manifest->min_source_version = metadata->min_source_version;
     memcpy(manifest->image_sha256, metadata->image_sha256, sizeof(manifest->image_sha256));
     memcpy(manifest->encryption_nonce, metadata->encryption_nonce, sizeof(manifest->encryption_nonce));
     memcpy(manifest->signature, metadata->manifest_signature, sizeof(manifest->signature));
@@ -109,9 +117,23 @@ boot_error_t boot_security_begin(const boot_security_begin_t *request)
 
     if (rollback_required &&
         request->has_rollback_floor &&
-        (request->version < request->rollback_floor_version))
+        (request->security_version < request->rollback_floor_version))
     {
         return BOOT_ERR_ROLLBACK;
+    }
+
+    /*
+     * Required-upgrade-path gate (feature-version space, distinct from the SVN
+     * rollback floor above). A target image may declare min_source_version, the
+     * minimum currently-installed FEATURE version required before it may be
+     * applied (e.g. 1.5 requires >= 1.4). Rejected here BEFORE the app is erased
+     * so a wrong-order flash cannot brick a working device. Re-bound to the
+     * signed manifest via the min_source_version cross-check in set_manifest.
+     */
+    if (request->has_current_feature_version &&
+        (request->current_feature_version < request->min_source_version))
+    {
+        return BOOT_ERR_UPGRADE_PATH;
     }
 
     memset(&g_security, 0, sizeof(g_security));
@@ -134,6 +156,13 @@ boot_error_t boot_security_set_manifest(const boot_manifest_t *manifest)
         return BOOT_ERR_BAD_STATE;
     }
 
+    if (g_security.manifest_valid)
+    {
+        /* The host resending the accepted manifest because its answer got
+         * lost is fine; swapping in another one mid-session is not. */
+        return (memcmp(manifest, &g_security.manifest, sizeof(*manifest)) == 0) ? BOOT_ERR_NONE : BOOT_ERR_BAD_STATE;
+    }
+
     if (manifest->magic != BOOT_MANIFEST_MAGIC)
     {
         return BOOT_ERR_MANIFEST;
@@ -150,6 +179,8 @@ boot_error_t boot_security_set_manifest(const boot_manifest_t *manifest)
         (manifest->image_size != g_security.begin.image_size) ||
         (manifest->image_crc32 != g_security.begin.expected_crc32) ||
         (manifest->firmware_version != g_security.begin.version) ||
+        (manifest->security_version != g_security.begin.security_version) ||
+        (manifest->min_source_version != g_security.begin.min_source_version) ||
         (manifest->flags != g_security.begin.flags))
     {
         return BOOT_ERR_MANIFEST;
@@ -255,6 +286,7 @@ boot_error_t boot_security_verify_image_with_state(const boot_target_config_t *c
     boot_security_state_t security_state;
     uint8_t image_sha256[BOOT_SHA256_DIGEST_SIZE];
     uint32_t offset = 0U;
+    uint32_t ecc_errors;
     const bool signed_image = (metadata != NULL) && ((metadata->flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0U);
     const bool rollback_required =
         ((metadata != NULL) && ((metadata->flags & BOOT_FLAG_ANTI_ROLLBACK) != 0U)) ||
@@ -291,7 +323,7 @@ boot_error_t boot_security_verify_image_with_state(const boot_target_config_t *c
             return BOOT_ERR_ROLLBACK;
         }
 
-        if (metadata->version < security_state.rollback_floor_version)
+        if (metadata->security_version < security_state.rollback_floor_version)
         {
             return BOOT_ERR_ROLLBACK;
         }
@@ -308,6 +340,7 @@ boot_error_t boot_security_verify_image_with_state(const boot_target_config_t *c
         return BOOT_ERR_SIGNATURE;
     }
 
+    ecc_errors = boot_platform_flash_ecc_error_count();
     boot_sha256_init(&sha);
     while (offset < metadata->image_size)
     {
@@ -320,6 +353,11 @@ boot_error_t boot_security_verify_image_with_state(const boot_target_config_t *c
         offset += chunk_len;
     }
     boot_sha256_final(&sha, image_sha256);
+
+    if (boot_platform_flash_ecc_error_count() != ecc_errors)
+    {
+        return BOOT_ERR_FLASH;
+    }
 
     if (memcmp(image_sha256, metadata->image_sha256, sizeof(image_sha256)) != 0)
     {

@@ -20,6 +20,15 @@ SECTIONS
     . = ALIGN(4);
   } >FLASH
 
+  /* Tells the application which bootloader started it (boot_info_stm32f072.c). */
+  .boot_info :
+  {
+    KEEP(*(.boot_info))
+    . = ALIGN(4);
+  } >FLASH
+
+  ASSERT(SIZEOF(.isr_vector) == 0xC0, "the boot info record is expected right behind the vector table")
+
   .text :
   {
     . = ALIGN(4);

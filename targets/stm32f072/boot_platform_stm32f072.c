@@ -6,16 +6,14 @@
 #include "stm32f0xx_hal.h"
 #include "stm32f0xx_hal_flash.h"
 #include "stm32f0xx_hal_flash_ex.h"
-#include "usbd_cdc_acm_if.h"
 
 #include "targets/common/boot_target_common.h"
 #include "targets/stm32f072/board_config.h"
+#include "targets/stm32f072/board_pins.h"
 
 #define F072_BOOT_REQUEST_SIGNATURE   0x424F4F54UL
 #define F072_BOOT_REQUEST_ADDRESS     (0x20000000UL + 0x3F00UL)
 #define F072_VECTOR_TABLE_WORDS       48U
-
-static boot_target_usb_transport_t g_usb_transport;
 
 const boot_target_config_t *boot_platform_target(void)
 {
@@ -27,49 +25,49 @@ uint32_t boot_platform_millis(void)
     return HAL_GetTick();
 }
 
+#if defined(F072_BOOT_REQUEST_GPIO)
+/* Runs before HAL_Init(), from bootloader_init(): registers only. */
+static bool boot_f072_request_pin_active(void)
+{
+    const uint32_t shift = 2U * F072_BOOT_REQUEST_PIN;
+    uint32_t level;
+
+    RCC->AHBENR |= F072_BOOT_REQUEST_GPIO_EN;
+    (void)RCC->AHBENR;
+    F072_BOOT_REQUEST_GPIO->MODER &= ~(3UL << shift); /* input */
+    /* Pulled to the inactive level, so an unconnected pin asks for nothing. */
+    F072_BOOT_REQUEST_GPIO->PUPDR = (F072_BOOT_REQUEST_GPIO->PUPDR & ~(3UL << shift)) |
+                                    ((F072_BOOT_REQUEST_ACTIVE_HIGH ? 2UL : 1UL) << shift);
+    for (volatile uint32_t i = 0U; i < 200U; ++i) /* let the pull settle */
+    {
+    }
+    level = (F072_BOOT_REQUEST_GPIO->IDR >> F072_BOOT_REQUEST_PIN) & 1U;
+    return level == (F072_BOOT_REQUEST_ACTIVE_HIGH ? 1U : 0U);
+}
+#endif
+
 bool boot_platform_force_bootloader(void)
 {
     volatile uint32_t *request = (volatile uint32_t *)F072_BOOT_REQUEST_ADDRESS;
+    bool requested = false;
 
     if (*request == F072_BOOT_REQUEST_SIGNATURE)
     {
         *request = 0U;
         __DSB();
         __ISB();
-        return true;
+        requested = true;
     }
 
-    return false;
-}
+#if defined(F072_BOOT_REQUEST_GPIO)
+    /* A master MCU holding the BOOT-REQUEST line through reset. */
+    if (boot_f072_request_pin_active())
+    {
+        requested = true;
+    }
+#endif
 
-void boot_stm32f072_usb_diag_note_rx(uint32_t length)
-{
-    boot_target_usb_transport_note_rx(&g_usb_transport, length, HAL_GetTick());
-}
-
-void boot_stm32f072_usb_diag_note_rx_overflow(void)
-{
-    boot_target_usb_transport_note_rx_overflow(&g_usb_transport);
-}
-
-void boot_stm32f072_usb_diag_note_tx_complete(uint32_t length)
-{
-    boot_target_usb_transport_note_tx_complete(&g_usb_transport, length, HAL_GetTick());
-}
-
-void boot_platform_transport_send(const uint8_t *data, size_t length)
-{
-    boot_target_usb_transport_send(&g_usb_transport, data, length);
-}
-
-void boot_platform_transport_poll(void)
-{
-    boot_target_usb_transport_poll(&g_usb_transport, CDC_IsBusy, CDC_Transmit, USBD_OK, HAL_GetTick());
-}
-
-bool boot_platform_transport_get_diag(boot_diag_response_t *out_diag)
-{
-    return boot_target_usb_transport_get_diag(&g_usb_transport, out_diag);
+    return requested;
 }
 
 void boot_platform_watchdog_kick(void)
@@ -77,6 +75,11 @@ void boot_platform_watchdog_kick(void)
 #if defined(IWDG)
     IWDG->KR = 0xAAAAU;
 #endif
+}
+
+uint32_t boot_platform_flash_ecc_error_count(void)
+{
+    return 0U; /* no flash ECC on this part */
 }
 
 void boot_platform_flash_unlock(void)
@@ -201,5 +204,48 @@ void boot_platform_jump_to_app(uint32_t app_base)
 
 void boot_platform_reboot(void)
 {
+#if defined(AFFINE_BOARD_MONICA_LITE_R1)
+    /*
+     * NRST is tied to the supply on this board, so a reset the MCU asks for
+     * itself never happens. Put the hardware back into its reset state by
+     * hand and start again from the reset vector.
+     */
+    const uint32_t *vectors = (const uint32_t *)g_target_config.flash_base;
+
+    __disable_irq();
+
+    HAL_DeInit();
+    HAL_RCC_DeInit();
+
+    SysTick->CTRL = 0U;
+    SysTick->LOAD = 0U;
+    SysTick->VAL = 0U;
+    SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
+
+    for (uint32_t i = 0U; i < (sizeof(NVIC->ICER) / sizeof(NVIC->ICER[0])); ++i)
+    {
+        NVIC->ICER[i] = 0xFFFFFFFFUL;
+        NVIC->ICPR[i] = 0xFFFFFFFFUL;
+    }
+
+    /* The USB pull-up went away with the peripheral: give the host time to notice. */
+    for (volatile uint32_t i = 0U; i < 100000UL; ++i)
+    {
+    }
+
+    __HAL_RCC_SYSCFG_CLK_ENABLE();
+    __HAL_SYSCFG_REMAPMEMORY_FLASH();
+    __DSB();
+    __ISB();
+
+    __enable_irq();
+    __set_MSP(vectors[0]);
+    ((void (*)(void))vectors[1])();
+
+    for (;;)
+    {
+    }
+#else
     NVIC_SystemReset();
+#endif
 }

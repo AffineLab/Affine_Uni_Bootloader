@@ -77,7 +77,35 @@ target_link_libraries(bootloader_stub PRIVATE boot_core)
 
 option(AFFINE_BUILD_STM32G431 "Build STM32G431 bootloader target" OFF)
 option(AFFINE_BUILD_STM32H503 "Build STM32H503 bootloader target" OFF)
+option(AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT "Use the protected 40 KiB Keychip application slot" OFF)
+option(AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY "Require signed anti-rollback updates for the Keychip layout" OFF)
 option(AFFINE_BUILD_STM32F072 "Build STM32F072 bootloader target" OFF)
+set(AFFINE_BOOT_F072_BOARD "monica" CACHE STRING "STM32F072 board: monica or monica_lite_r1")
+option(AFFINE_BOOT_F072_ROM_LOADER_ESCAPE "monica_lite_r1: let the application ask for the MCU ROM loader (development only)" OFF)
+# How the host reaches the bootloader: usb (USB CDC) or uart (a USART, for
+# boards without USB and MCUs behind a master; STM32F072 only so far, pins in
+# targets/stm32f072/board_pins.h). See docs/uart-transport.md.
+set(AFFINE_BOOT_TRANSPORT "usb" CACHE STRING "Bootloader transport: usb or uart")
+set_property(CACHE AFFINE_BOOT_TRANSPORT PROPERTY STRINGS usb uart)
+if(NOT AFFINE_BOOT_TRANSPORT MATCHES "^(usb|uart)$")
+    message(FATAL_ERROR "Unknown AFFINE_BOOT_TRANSPORT: ${AFFINE_BOOT_TRANSPORT} (usb or uart)")
+endif()
+if(AFFINE_BOOT_TRANSPORT STREQUAL "uart" AND (AFFINE_BUILD_STM32G431 OR AFFINE_BUILD_STM32H503))
+    message(FATAL_ERROR "AFFINE_BOOT_TRANSPORT=uart is only implemented for STM32F072 so far")
+endif()
+
+if(AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY)
+    if(NOT AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT)
+        message(FATAL_ERROR "AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY requires AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT")
+    endif()
+    if(NOT AFFINE_BOOT_KEYS_HEADER)
+        message(FATAL_ERROR "Keychip production policy requires AFFINE_BOOT_KEYS_HEADER with reviewed production keys")
+    endif()
+    set(AFFINE_BOOT_ALLOW_UNSIGNED_UPDATES 0)
+    set(AFFINE_BOOT_REQUIRE_SIGNED_UPDATES 1)
+    set(AFFINE_BOOT_ALLOW_OPTIONAL_ANTI_ROLLBACK 1)
+    set(AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED 1)
+endif()
 
 set(BOOT_TARGET_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/targets/common/boot_target_common.c
@@ -117,10 +145,11 @@ if(AFFINE_BUILD_STM32G431)
         ${STM32G431_TARGET_DIR}/usbd_desc.c
         ${STM32G431_TARGET_DIR}/usbd_cdc_acm_if.c
         ${STM32G431_TARGET_DIR}/boot_platform_stm32g431.c
+        ${STM32G431_TARGET_DIR}/boot_guard_stm32g431.c
         ${STM32G431_TARGET_DIR}/baremetal_runtime.c
         ${STM32G431_TARGET_DIR}/stm32g4xx_it.c
         ${STM32G431_CUBE_DIR}/Core/Src/system_stm32g4xx.c
-        ${STM32G431_CUBE_DIR}/Core/Startup/startup_stm32g431cbux.s
+        ${STM32G431_TARGET_DIR}/startup_stm32g431cbux_guarded.s
         ${STM32G431_COMPOSITE_DIR}/App/usb_device.c
         ${STM32G431_TARGET_DIR}/usbd_conf.c
         ${STM32G431_COMPOSITE_DIR}/Core/Src/usbd_core.c
@@ -197,13 +226,98 @@ if(AFFINE_BUILD_STM32G431)
         -Wl,-Map=${CMAKE_BINARY_DIR}/bootloader_stm32g431.map
     )
 
+    # The G431 bootloader is always guarded (boot_guard_stm32g431.c): the .bin
+    # is stamped with the length and sum the guard checks at every start, so a
+    # bootloader replaced in the field (g431_bl_updater) survives a power loss
+    # after its first page. An unstamped image boots without the check.
+    find_package(Python3 COMPONENTS Interpreter)
     if(CMAKE_OBJCOPY)
+        if(Python3_Interpreter_FOUND AND AFFINE_ARM_NM)
+            set(STM32G431_STAMP_COMMAND
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/patch_boot_guard.py
+                    $<TARGET_FILE:bootloader_stm32g431>
+                    ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
+                    --nm ${AFFINE_ARM_NM}
+                    --record-offset 0x1D8)
+        else()
+            message(WARNING "Python 3 or arm-none-eabi-nm missing: bootloader_stm32g431.bin stays unstamped and g431_bl_updater cannot be built")
+            set(STM32G431_STAMP_COMMAND)
+        endif()
         add_custom_command(TARGET bootloader_stm32g431 POST_BUILD
             COMMAND ${CMAKE_OBJCOPY} -O binary
                 $<TARGET_FILE:bootloader_stm32g431>
                 ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
+            ${STM32G431_STAMP_COMMAND}
             BYPRODUCTS ${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin
             COMMENT "Generating bootloader_stm32g431.bin"
+        )
+    endif()
+
+    # --- G431 bootloader self-update app (reflashes the bootloader region) ---
+    # It carries the bootloader built above, stamped; embed_bl_image.py refuses
+    # an image without a stamped guard. AFFINE_G431_BL_UPDATER_IMAGE selects
+    # another stamped image instead (a released bootloader, say).
+    set(STM32G431_UPDATER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/stm32g431_blupdater")
+    set(STM32G431_UPDATER_IMAGE_DIR "${CMAKE_BINARY_DIR}/g431_bl_image")
+    set(AFFINE_G431_BL_UPDATER_IMAGE "" CACHE FILEPATH "Stamped bootloader .bin for g431_bl_updater (default: this build's)")
+    if(AFFINE_G431_BL_UPDATER_IMAGE)
+        set(STM32G431_UPDATER_IMAGE_SOURCE "${AFFINE_G431_BL_UPDATER_IMAGE}")
+        set(STM32G431_UPDATER_IMAGE_DEPENDS "${AFFINE_G431_BL_UPDATER_IMAGE}")
+    else()
+        set(STM32G431_UPDATER_IMAGE_SOURCE "${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin")
+        set(STM32G431_UPDATER_IMAGE_DEPENDS bootloader_stm32g431 "${CMAKE_BINARY_DIR}/bootloader_stm32g431.bin")
+    endif()
+    add_custom_command(
+        OUTPUT ${STM32G431_UPDATER_IMAGE_DIR}/v3_bl_image.c ${STM32G431_UPDATER_IMAGE_DIR}/v3_bl_image.h
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_bl_image.py
+            ${STM32G431_UPDATER_IMAGE_SOURCE} ${STM32G431_UPDATER_IMAGE_DIR} --record-offset 0x1D8
+        DEPENDS ${STM32G431_UPDATER_IMAGE_DEPENDS} ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_bl_image.py
+        COMMENT "Embedding the stamped bootloader image into g431_bl_updater"
+    )
+    add_executable(g431_bl_updater EXCLUDE_FROM_ALL
+        ${STM32G431_UPDATER_DIR}/main.c
+        ${STM32G431_UPDATER_IMAGE_DIR}/v3_bl_image.c
+        ${STM32G431_TARGET_DIR}/baremetal_runtime.c
+        ${STM32G431_CUBE_DIR}/Core/Startup/startup_stm32g431cbux.s
+        ${STM32G431_CUBE_DIR}/Core/Src/system_stm32g4xx.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ramfunc.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc_ex.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr.c
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr_ex.c
+    )
+    target_include_directories(g431_bl_updater PRIVATE
+        ${STM32G431_UPDATER_IMAGE_DIR}
+        ${STM32G431_UPDATER_DIR}
+        ${STM32G431_TARGET_DIR}
+        ${STM32G431_CUBE_DIR}/Core/Inc
+        ${STM32G431_CUBE_DIR}/Drivers/STM32G4xx_HAL_Driver/Inc
+        ${STM32G431_CUBE_DIR}/Drivers/CMSIS/Include
+        ${STM32G431_CUBE_DIR}/Drivers/CMSIS/Device/ST/STM32G4xx/Include
+    )
+    target_compile_definitions(g431_bl_updater PRIVATE STM32G431xx USE_HAL_DRIVER)
+    target_compile_options(g431_bl_updater PRIVATE
+        -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+        -Os -ffunction-sections -fdata-sections -Wall -Wextra
+    )
+    target_link_options(g431_bl_updater PRIVATE
+        -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+        -nostartfiles --specs=nano.specs --specs=nosys.specs
+        -T${STM32G431_TARGET_DIR}/STM32G431CBUX_APP.ld
+        -Wl,--gc-sections
+        -Wl,-Map=${CMAKE_BINARY_DIR}/g431_bl_updater.map
+    )
+    if(CMAKE_OBJCOPY)
+        add_custom_command(TARGET g431_bl_updater POST_BUILD
+            COMMAND ${CMAKE_OBJCOPY} -O binary
+                $<TARGET_FILE:g431_bl_updater>
+                ${CMAKE_BINARY_DIR}/g431_bl_updater.bin
+            BYPRODUCTS ${CMAKE_BINARY_DIR}/g431_bl_updater.bin
+            COMMENT "Generating g431_bl_updater.bin"
         )
     endif()
 endif()
@@ -220,6 +334,40 @@ if(AFFINE_BUILD_STM32F072)
     affine_require_existing_path("${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_core.c"
         "STM32F072 USB Device middleware")
 
+    if(AFFINE_BOOT_F072_BOARD STREQUAL "monica_lite_r1")
+        set(STM32F072_STARTUP ${STM32F072_TARGET_DIR}/startup_stm32f072cbtx_guarded.s)
+        set(STM32F072_LINKER_SCRIPT ${STM32F072_TARGET_DIR}/STM32F072CBTX_BOOTLOADER_GUARDED.ld)
+        set(STM32F072_BOARD_SOURCES ${STM32F072_TARGET_DIR}/boot_guard_stm32f072.c)
+    elseif(AFFINE_BOOT_F072_BOARD STREQUAL "monica")
+        set(STM32F072_STARTUP ${STM32F072_CUBE_DIR}/Core/Startup/startup_stm32f072cbtx.s)
+        set(STM32F072_LINKER_SCRIPT ${STM32F072_TARGET_DIR}/STM32F072CBTX_BOOTLOADER.ld)
+        set(STM32F072_BOARD_SOURCES ${STM32F072_TARGET_DIR}/boot_info_stm32f072.c)
+    else()
+        message(FATAL_ERROR "Unknown AFFINE_BOOT_F072_BOARD: ${AFFINE_BOOT_F072_BOARD}")
+    endif()
+
+    if(AFFINE_BOOT_TRANSPORT STREQUAL "uart")
+        set(STM32F072_TRANSPORT_SOURCES ${STM32F072_TARGET_DIR}/transport_uart.c)
+    else()
+        set(STM32F072_TRANSPORT_SOURCES
+            ${STM32F072_TARGET_DIR}/transport_usb.c
+            ${STM32F072_TARGET_DIR}/usb.c
+            ${STM32F072_TARGET_DIR}/usbd_desc.c
+            ${STM32F072_TARGET_DIR}/usbd_cdc_acm_if.c
+            ${STM32F072_COMPOSITE_DIR}/App/usb_device.c
+            ${STM32F072_TARGET_DIR}/usbd_conf.c
+            ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_core.c
+            ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_ctlreq.c
+            ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_ioreq.c
+            ${STM32F072_COMPOSITE_DIR}/Class/COMPOSITE/Src/usbd_composite.c
+            ${STM32F072_COMPOSITE_DIR}/Class/CDC_ACM/Src/usbd_cdc_acm.c
+            ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pcd.c
+            ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pcd_ex.c
+            ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pwr.c
+            ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_ll_usb.c
+        )
+    endif()
+
     add_executable(bootloader_stm32f072
         src/boot_protocol.c
         src/boot_crypto.c
@@ -228,32 +376,20 @@ if(AFFINE_BUILD_STM32F072)
         src/bootloader.c
         ${BOOT_TARGET_COMMON_SOURCES}
         ${STM32F072_TARGET_DIR}/main.c
-        ${STM32F072_TARGET_DIR}/usb.c
-        ${STM32F072_TARGET_DIR}/usbd_desc.c
-        ${STM32F072_TARGET_DIR}/usbd_cdc_acm_if.c
+        ${STM32F072_TRANSPORT_SOURCES}
         ${STM32F072_TARGET_DIR}/boot_platform_stm32f072.c
         ${STM32F072_TARGET_DIR}/baremetal_runtime.c
         ${STM32F072_TARGET_DIR}/stm32f0xx_it.c
         ${STM32F072_CUBE_DIR}/Core/Src/system_stm32f0xx.c
-        ${STM32F072_CUBE_DIR}/Core/Startup/startup_stm32f072cbtx.s
-        ${STM32F072_COMPOSITE_DIR}/App/usb_device.c
-        ${STM32F072_TARGET_DIR}/usbd_conf.c
-        ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_core.c
-        ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_ctlreq.c
-        ${STM32F072_COMPOSITE_DIR}/Core/Src/usbd_ioreq.c
-        ${STM32F072_COMPOSITE_DIR}/Class/COMPOSITE/Src/usbd_composite.c
-        ${STM32F072_COMPOSITE_DIR}/Class/CDC_ACM/Src/usbd_cdc_acm.c
+        ${STM32F072_STARTUP}
+        ${STM32F072_BOARD_SOURCES}
         ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal.c
         ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_cortex.c
         ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_flash.c
         ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_flash_ex.c
         ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_gpio.c
-        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pcd.c
-        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pcd_ex.c
-        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pwr.c
         ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_rcc.c
         ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_rcc_ex.c
-        ${STM32F072_CUBE_DIR}/Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_ll_usb.c
     )
 
     target_include_directories(bootloader_stm32f072 PRIVATE
@@ -276,6 +412,15 @@ if(AFFINE_BUILD_STM32F072)
         STM32F072xB
         USE_HAL_DRIVER
     )
+    if(AFFINE_BOOT_TRANSPORT STREQUAL "uart")
+        target_compile_definitions(bootloader_stm32f072 PRIVATE AFFINE_BOOT_TRANSPORT_UART=1)
+    endif()
+    if(AFFINE_BOOT_F072_BOARD STREQUAL "monica_lite_r1")
+        target_compile_definitions(bootloader_stm32f072 PRIVATE AFFINE_BOARD_MONICA_LITE_R1)
+        if(AFFINE_BOOT_F072_ROM_LOADER_ESCAPE)
+            target_compile_definitions(bootloader_stm32f072 PRIVATE AFFINE_BOOT_F072_ROM_LOADER_ESCAPE=1)
+        endif()
+    endif()
     affine_apply_boot_policy(bootloader_stm32f072)
 
     target_compile_options(bootloader_stm32f072 PRIVATE
@@ -313,7 +458,7 @@ if(AFFINE_BUILD_STM32F072)
         -nostartfiles
         --specs=nano.specs
         --specs=nosys.specs
-        -T${STM32F072_TARGET_DIR}/STM32F072CBTX_BOOTLOADER.ld
+        -T${STM32F072_LINKER_SCRIPT}
         -Wl,--gc-sections
         -Wl,-Map=${CMAKE_BINARY_DIR}/bootloader_stm32f072.map
     )
@@ -397,6 +542,9 @@ if(AFFINE_BUILD_STM32H503)
         STM32H503xx
         USE_HAL_DRIVER
     )
+    if(AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT)
+        target_compile_definitions(bootloader_stm32h503 PRIVATE AFFINE_BOOT_H503_KEYCHIP_LAYOUT=1)
+    endif()
     affine_apply_boot_policy(bootloader_stm32h503)
 
     target_compile_options(bootloader_stm32h503 PRIVATE

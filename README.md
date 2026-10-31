@@ -38,7 +38,7 @@ targets/                  MCU-specific platform implementations and linker scrip
 targets/common/           Shared target-side helpers for flash range checks and USB transport
 third_party/              Vendored STM32Cube HAL/CMSIS/startup and ST USB middleware subsets
 cmake/toolchains/         Cross-compilation toolchain files
-tools/boot_test.py        Host-side USB CDC smoke test and flashing utility
+tools/boot_test.py        Host-side smoke test and flashing utility (USB CDC or UART)
 ```
 
 ## Protocol Summary
@@ -49,7 +49,7 @@ Main commands:
 
 - `HELLO`: query protocol version, target ID, application base address, slot size, and maximum chunk size.
 - `GET_DEVICE_INFO`: query formal target, board, flash layout, memory geometry, write alignment, and capability fields.
-- `BEGIN`: start a firmware download session for a specific target, board, and flash layout, then erase the application pages covered by the image.
+- `BEGIN`: start a firmware download session for a specific target, board, and flash layout. An unsigned session erases the application pages covered by the image here; a signed one erases nothing yet.
 - `DATA`: write one aligned firmware chunk at the next expected offset.
 - `COMMIT`: verify the received image, read back flash CRC, and write committed metadata.
 - `ABORT`: cancel the active session.
@@ -57,7 +57,7 @@ Main commands:
 - `GET_DIAG`: query transport and frame decoder diagnostics.
 - `GET_METADATA`: query the selected valid metadata copy without running a full image CRC.
 - `CLEAR_METADATA`: erase application metadata copies and leave the device in bootloader mode. Persistent security state is preserved by default.
-- `SET_MANIFEST`: provide a signed firmware manifest after `BEGIN` and before `DATA`.
+- `SET_MANIFEST`: provide a signed firmware manifest after `BEGIN` and before `DATA`. Only once its signature checks out are the application pages erased, so a host without a valid signature cannot wipe the application. Resending the same manifest (a lost answer) is accepted without erasing again.
 - `VERIFY_IMAGE`: validate selected metadata, vector table, full image CRC, and security policy.
 - `REBOOT`: acknowledge the command and reset the MCU.
 - `BOOT_APP`: acknowledge the command, then jump to the committed application if it validates.
@@ -72,15 +72,41 @@ Applications remain standard bare-metal images:
 
 The bootloader stores CRC-protected image metadata in a separate flash region near the end of the application slot. Targets with enough reserved metadata space keep two erase-unit metadata copies and use a valid copy on boot. On boot, the bootloader validates metadata, vector table addresses, and image CRC before jumping to the application.
 
+The metadata record carries a `format_version` (`BOOT_METADATA_FORMAT_VERSION`); records from older layouts are ignored, so after a bootloader upgrade the device stays in the bootloader until the application is flashed again. The security state sits at a fixed offset (`0x200`) in each metadata erase unit, independent of the record layout; it is still found where older bootloaders kept it and moves to the fixed offset on the next write.
+
+On STM32G431 and STM32H503 a read of flash whose programming was cut short by a power loss raises a flash ECC double error (NMI). The NMI handler clears and counts it, and every metadata, security-state and image read checks that count: the copy is skipped or the image fails verification, and the device stays in the bootloader instead of hanging in the NMI.
+
+The application's bootloader request word is read and cleared once, at the very start of the bootloader, before the auto-boot window. A host that talks to the bootloader inside that window and then sends `BOOT_APP` no longer leaves the request behind for the application's next reset.
+
 STM32F072 is a Cortex-M0 target and has no VTOR register. Its bootloader copies the application vector table to the first `0xC0` bytes of SRAM and remaps SRAM at address zero before jumping, so STM32F072 applications must reserve `0x20000000`-`0x200000BF`. The provided `targets/stm32f072/STM32F072CBTX_APP.ld` starts application RAM at `0x200000C0`.
+
+### STM32G431 boot guard and bootloader updater
+
+The STM32G431 bootloader always starts with a boot guard (`targets/stm32g431/boot_guard_stm32g431.c`, the port of the STM32F072 guard): the first 2 KiB page holds the vector table, the guard record, the guard, the reset code and the NMI handler. At every start the guard checks a length and sum, stamped into the `.bin` after linking by `tools/patch_boot_guard.py --record-offset 0x1D8` (the build does this automatically), over the rest of the bootloader. If the rest is incomplete it starts the ST system DFU loader at `0x1FFF0000`. An unstamped image (a debugger flash of the `.elf`) boots without the check.
+
+`g431_bl_updater` (`targets/stm32g431_blupdater`) is an application that replaces the bootloader in the field. The build generates its embedded image from the stamped bootloader (`tools/embed_bl_image.py`; `-DAFFINE_G431_BL_UPDATER_IMAGE=<stamped .bin>` embeds another one), and both the generator and the updater refuse an image without a stamped guard. It writes the first page first, then the others, verifying each page. Power lost after the first page leaves a board that comes up in the ST DFU loader and can be written again. Power lost while the first page itself is being erased or written (some tens of ms) still needs BOOT0 or SWD: single-bank G431 flash leaves no way around that window.
 
 Supported targets reserve 24 KiB for the bootloader:
 
 | Target | Bootloader | Application slot | Metadata |
 | --- | --- | --- | --- |
 | `STM32F072` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801F7FF` (102 KiB) | `0x0801F800`-`0x0801FFFF` |
-| `STM32G431` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801DFFF` (96 KiB) | `0x0801E000`-`0x0801FFFF` |
+| `STM32G431` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801CFFF` (92 KiB) | `0x0801E000`-`0x0801FFFF` |
 | `STM32H503` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`-`0x0801FFFF` |
+
+On STM32G431, `0x0801D000`-`0x0801DFFF` between the application slot and the metadata is the
+application's settings page (Mai_stm32): the bootloader never erases or writes it.
+
+For the H503 Keychip build, configure
+`-DAFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT=ON`. It advertises a distinct board and
+layout ID and hard-caps the application slot at
+`0x08006000`-`0x0800FFFF` (40 KiB), while leaving
+`0x08010000`-`0x0801BFFF` unavailable to update erase/write operations.
+Production Keychip builds should also set
+`-DAFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY=ON` and provide a reviewed generated
+key header through `-DAFFINE_BOOT_KEYS_HEADER=...`. That profile rejects
+unsigned updates and requires anti-rollback on signed images; configuration
+fails instead of silently using development keys when the key header is absent.
 
 ## Security Model
 
@@ -158,6 +184,18 @@ cmake -S . -B build-stm32f072 `
 ninja -C build-stm32f072 bootloader_stm32f072
 ```
 
+STM32F072 over a USART instead of USB (`AFFINE_BOOT_TRANSPORT=uart`, USART1 on PA9/PA10 at 115200 8N1 by default, see `targets/stm32f072/board_pins.h` and `docs/uart-transport.md`):
+
+```powershell
+cmake -S . -B build-stm32f072-uart `
+  -G Ninja `
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake `
+  -DAFFINE_BUILD_STM32F072=ON `
+  -DAFFINE_BOOT_TRANSPORT=uart
+
+ninja -C build-stm32f072-uart bootloader_stm32f072
+```
+
 Example STM32G431 build:
 
 ```powershell
@@ -187,6 +225,17 @@ py tools\boot_test.py COM3 flash firmware.bin --app-jump --run --wait-app
 py tools\boot_test.py COM5 clear-metadata
 py tools\boot_test.py COM5 reboot
 ```
+
+Over a UART (a board built with `AFFINE_BOOT_TRANSPORT=uart`, through a USB-UART adapter or a network serial bridge):
+
+```powershell
+py tools\boot_test.py COM7 probe --transport uart
+py tools\boot_test.py COM7 flash firmware.bin --transport uart --baud 115200 --run
+py tools\boot_test.py COM7 flash firmware.bin --transport uart --wait-hello 10
+py tools\boot_test.py socket://192.168.1.20:4000 probe --transport uart
+```
+
+`--transport uart` skips all USB re-enumeration waits (the port stays the same across resets), uses `--baud` as the line rate, adds the wire time to each response timeout, retries 5 times by default, and resyncs on stray bytes before an answer. `--wait-hello SECONDS` sends HELLO every 50 ms until the bootloader answers: start it, then reset a board that has no BOOT-REQUEST line, to catch the auto-boot window. See `docs/uart-transport.md`.
 
 Offline manifest generation for the G431 target:
 

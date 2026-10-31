@@ -7,6 +7,10 @@
 #include "boot_security.h"
 
 #define BOOT_DEFERRED_ACTION_DELAY_MS 100U
+/* Longest quiet gap inside one frame. Well above the gaps of a frame sent in
+ * one go (USB packets, a UART bridge forwarding them), well below any host's
+ * retry timeout. */
+#define BOOT_DECODER_IDLE_RESET_MS    100U
 #define BOOT_CRC_PROGRESS_CHUNK       1024U
 #define BOOT_METADATA_INVALID_COPY    0xFFFFFFFFUL
 
@@ -74,10 +78,13 @@ static void bootloader_prepare_metadata(bootloader_t *ctx, boot_metadata_t *meta
 
     memset(metadata, 0, sizeof(*metadata));
     metadata->magic = BOOT_METADATA_MAGIC;
+    metadata->format_version = BOOT_METADATA_FORMAT_VERSION;
     metadata->target_id = cfg->target_id;
     metadata->board_id = cfg->board_id;
     metadata->flash_layout_id = cfg->flash_layout_id;
     metadata->version = ctx->session.version;
+    metadata->security_version = ctx->session.security_version;
+    metadata->min_source_version = ctx->session.min_source_version;
     metadata->image_size = ctx->session.expected_size;
     metadata->image_crc32 = ctx->session.expected_crc32;
     metadata->app_base = cfg->app_base;
@@ -86,6 +93,22 @@ static void bootloader_prepare_metadata(bootloader_t *ctx, boot_metadata_t *meta
 }
 
 static bool bootloader_current_version(uint32_t *out_version)
+{
+    boot_metadata_t metadata;
+
+    if (!boot_metadata_select_valid(boot_platform_target(), &metadata))
+    {
+        return false;
+    }
+
+    if (out_version != NULL)
+    {
+        *out_version = metadata.security_version;
+    }
+    return true;
+}
+
+static bool bootloader_current_feature_version(uint32_t *out_version)
 {
     boot_metadata_t metadata;
 
@@ -172,6 +195,7 @@ static boot_error_t bootloader_calculate_image_crc(bootloader_t *ctx,
                                                    uint32_t *out_crc32)
 {
     const uint8_t *image = (const uint8_t *)metadata->app_base;
+    const uint32_t ecc_errors = boot_platform_flash_ecc_error_count();
     uint32_t crc = 0U;
     uint32_t offset = 0U;
 
@@ -193,6 +217,11 @@ static boot_error_t bootloader_calculate_image_crc(bootloader_t *ctx,
     }
 
     *out_crc32 = crc;
+    if (boot_platform_flash_ecc_error_count() != ecc_errors)
+    {
+        /* Part of the image was cut short while being written. */
+        return BOOT_ERR_FLASH;
+    }
     return BOOT_ERR_NONE;
 }
 
@@ -269,20 +298,18 @@ static void bootloader_read_metadata(bootloader_t *ctx, boot_metadata_response_t
 
     for (uint32_t copy = 0U; copy < copy_count; ++copy)
     {
-        const boot_metadata_t *candidate = (const boot_metadata_t *)boot_metadata_copy_address(cfg, copy);
-
         boot_platform_watchdog_kick();
-        if (!boot_metadata_is_valid(cfg, candidate))
+        if (!boot_metadata_read_copy(cfg, copy, &rsp->metadata))
         {
             continue;
         }
 
         rsp->valid = 1U;
         rsp->selected_copy = copy;
-        rsp->metadata = *candidate;
-        rsp->app_valid = boot_image_vector_is_valid(cfg, candidate->app_base) ? 1U : 0U;
+        rsp->app_valid = boot_image_vector_is_valid(cfg, rsp->metadata.app_base) ? 1U : 0U;
         return;
     }
+    memset(&rsp->metadata, 0, sizeof(rsp->metadata));
 }
 
 static boot_error_t bootloader_clear_metadata(bootloader_t *ctx)
@@ -389,11 +416,38 @@ static boot_error_t bootloader_store_metadata(bootloader_t *ctx,
     return BOOT_ERR_NONE;
 }
 
+/* Erases the application pages the open session will write. A failure closes
+ * the session, so no DATA lands on pages that were not erased. */
+static boot_error_t bootloader_erase_session_app(bootloader_t *ctx)
+{
+    const boot_target_config_t *cfg = boot_platform_target();
+    boot_error_t err;
+
+    /* A BOOT_APP still waiting to jump would land in the erased application. */
+    ctx->pending_action = BOOT_PENDING_ACTION_NONE;
+    ctx->status = BOOT_STATUS_ERASING;
+    boot_platform_flash_unlock();
+    err = bootloader_erase_range(ctx, cfg->app_base, ctx->session.expected_size, BOOT_OPERATION_ERASE_APP);
+    boot_platform_flash_lock();
+
+    if (err != BOOT_ERR_NONE)
+    {
+        memset(&ctx->session, 0, sizeof(ctx->session));
+        boot_security_reset();
+        return BOOT_ERR_FLASH;
+    }
+
+    ctx->session.app_erased = 1U;
+    ctx->status = BOOT_STATUS_RECEIVING;
+    return BOOT_ERR_NONE;
+}
+
 static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin_request_t *req)
 {
     const boot_target_config_t *cfg = boot_platform_target();
-    const uint32_t slot_size = cfg->metadata_base - cfg->app_base;
+    const uint32_t slot_size = cfg->app_size;
     uint32_t current_version = 0U;
+    uint32_t current_feature_version = 0U;
     uint32_t rollback_floor_version = 0U;
     boot_security_begin_t sec_req;
 
@@ -405,8 +459,12 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
     sec_req.flash_layout_id = req->flash_layout_id;
     sec_req.image_size = req->image_size;
     sec_req.expected_crc32 = req->image_crc32;
+    sec_req.security_version = req->security_version;
+    sec_req.min_source_version = req->min_source_version;
     sec_req.has_current_version = bootloader_current_version(&current_version);
     sec_req.current_version = current_version;
+    sec_req.has_current_feature_version = bootloader_current_feature_version(&current_feature_version);
+    sec_req.current_feature_version = current_feature_version;
     sec_req.has_rollback_floor = bootloader_effective_rollback_floor(&rollback_floor_version);
     sec_req.rollback_floor_version = rollback_floor_version;
 
@@ -435,20 +493,11 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
         }
     }
 
-    ctx->status = BOOT_STATUS_ERASING;
-    boot_platform_flash_unlock();
-
-    if (bootloader_erase_range(ctx, cfg->app_base, req->image_size, BOOT_OPERATION_ERASE_APP) != BOOT_ERR_NONE)
-    {
-        boot_platform_flash_lock();
-        return BOOT_ERR_FLASH;
-    }
-
-    boot_platform_flash_lock();
-
     memset(&ctx->session, 0, sizeof(ctx->session));
     ctx->session.state = BOOT_SESSION_STATE_OPEN;
     ctx->session.version = req->version;
+    ctx->session.security_version = req->security_version;
+    ctx->session.min_source_version = req->min_source_version;
     ctx->session.expected_size = req->image_size;
     ctx->session.expected_crc32 = req->image_crc32;
     ctx->session.running_crc32 = 0U;
@@ -457,7 +506,35 @@ static boot_error_t bootloader_begin_session(bootloader_t *ctx, const boot_begin
     ctx->last_error = BOOT_ERR_NONE;
     memset(&ctx->metadata_shadow, 0, sizeof(ctx->metadata_shadow));
 
-    return BOOT_ERR_NONE;
+    /*
+     * A signed session erases nothing until SET_MANIFEST has checked the
+     * signature: otherwise any host could wipe the application with a BEGIN
+     * alone. An unsigned one has nothing more to prove.
+     */
+    if ((req->flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0U)
+    {
+        return BOOT_ERR_NONE;
+    }
+
+    return bootloader_erase_session_app(ctx);
+}
+
+static boot_error_t bootloader_set_manifest(bootloader_t *ctx, const boot_manifest_t *manifest)
+{
+    boot_error_t err;
+
+    if (ctx->session.state != BOOT_SESSION_STATE_OPEN)
+    {
+        return BOOT_ERR_BAD_STATE;
+    }
+
+    err = boot_security_set_manifest(manifest);
+    if ((err != BOOT_ERR_NONE) || (ctx->session.app_erased != 0U))
+    {
+        return err; /* a repeated manifest (lost answer) erases nothing again */
+    }
+
+    return bootloader_erase_session_app(ctx);
 }
 
 static boot_error_t bootloader_write_data(bootloader_t *ctx, const uint8_t *payload, uint32_t payload_len)
@@ -526,7 +603,7 @@ static boot_error_t bootloader_write_data(bootloader_t *ctx, const uint8_t *payl
     }
     chunk = chunk_buffer;
 
-    if (boot_security_note_plaintext(chunk, prefix->data_len) != BOOT_ERR_NONE)
+    if (ctx->session.app_erased == 0U)
     {
         return BOOT_ERR_BAD_STATE;
     }
@@ -538,6 +615,13 @@ static boot_error_t bootloader_write_data(bootloader_t *ctx, const uint8_t *payl
         return BOOT_ERR_FLASH;
     }
     boot_platform_flash_lock();
+
+    /* Hashed only once written, so a host retrying a failed chunk is not
+     * counted twice. */
+    if (boot_security_note_plaintext(chunk, prefix->data_len) != BOOT_ERR_NONE)
+    {
+        return BOOT_ERR_BAD_STATE;
+    }
 
     ctx->session.running_crc32 = boot_crc32_update(ctx->session.running_crc32, chunk, prefix->data_len);
     ctx->session.written_size += prefix->data_len;
@@ -595,7 +679,7 @@ static boot_error_t bootloader_commit_session(bootloader_t *ctx, const boot_comm
         (((metadata.flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0U) &&
          (AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED != 0)))
     {
-        uint32_t floor_version = metadata.version;
+        uint32_t floor_version = metadata.security_version;
 
         if (boot_security_state_select_valid(boot_platform_target(), &current_security_state) &&
             (current_security_state.rollback_floor_version > floor_version))
@@ -639,7 +723,7 @@ static void bootloader_handle_frame(bootloader_t *ctx, const boot_decoded_frame_
             rsp.target_id = cfg->target_id;
             rsp.flash_size = cfg->flash_size;
             rsp.app_base = cfg->app_base;
-            rsp.slot_size = cfg->metadata_base - cfg->app_base;
+            rsp.slot_size = cfg->app_size;
             rsp.max_chunk_size = cfg->max_chunk_size;
             rsp.capabilities = boot_security_capabilities();
             bootloader_send_response(frame->header.opcode, frame->header.sequence, &rsp, sizeof(rsp));
@@ -693,7 +777,7 @@ static void bootloader_handle_frame(bootloader_t *ctx, const boot_decoded_frame_
             }
             else
             {
-                err = boot_security_set_manifest((const boot_manifest_t *)frame->payload);
+                err = bootloader_set_manifest(ctx, (const boot_manifest_t *)frame->payload);
             }
             break;
 
@@ -856,12 +940,23 @@ void bootloader_init(bootloader_t *ctx)
     ctx->status = BOOT_STATUS_READY;
     ctx->operation = BOOT_OPERATION_NONE;
     ctx->pending_action = BOOT_PENDING_ACTION_NONE;
+    ctx->boot_requested = boot_platform_force_bootloader();
 }
 
 void bootloader_poll(bootloader_t *ctx)
 {
     boot_platform_transport_poll();
     boot_platform_watchdog_kick();
+
+    /* A partial frame that went quiet lost bytes on the way: drop it, so the
+     * host's retry is not read as its missing tail. */
+    if (boot_decoder_in_frame(&ctx->decoder) &&
+        ((boot_platform_millis() - ctx->last_rx_ms) >= BOOT_DECODER_IDLE_RESET_MS))
+    {
+        boot_decoder_reset(&ctx->decoder);
+        ctx->decode_error_count++;
+        ctx->last_decode_error = BOOT_ERR_FRAME_TIMEOUT;
+    }
 
     if (ctx->pending_action == BOOT_PENDING_ACTION_NONE)
     {
@@ -891,21 +986,76 @@ void bootloader_poll(bootloader_t *ctx)
     ctx->pending_action = BOOT_PENDING_ACTION_NONE;
 }
 
+static bool bootloader_opcode_is_read_only(uint16_t opcode)
+{
+    switch ((boot_opcode_t)opcode)
+    {
+        case BOOT_OP_HELLO:
+        case BOOT_OP_GET_STATUS:
+        case BOOT_OP_GET_DIAG:
+        case BOOT_OP_GET_METADATA:
+        case BOOT_OP_GET_DEVICE_INFO:
+        case BOOT_OP_VERIFY_IMAGE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/*
+ * Hosts retry by resending the same frame with the same sequence. When the
+ * frame did run and only its answer got lost (a UART drops bytes, USB does
+ * not), running a DATA again fails on its offset and a COMMIT on the closed
+ * session. So an exact repeat of the DATA or COMMIT that ran last, and
+ * succeeded, is answered with the status and not run again. A failed one runs
+ * again: the retry may succeed. Every other command runs as usual (BEGIN just
+ * starts the session again; SET_MANIFEST accepts its own repeat).
+ */
+static bool bootloader_frame_is_retry(const bootloader_t *ctx, const boot_decoded_frame_t *frame)
+{
+    return ctx->retry_valid &&
+           (frame->header.opcode == ctx->retry_opcode) &&
+           (frame->header.sequence == ctx->retry_sequence) &&
+           (frame->header.payload_crc32 == ctx->retry_payload_crc32);
+}
+
+static void bootloader_note_frame_run(bootloader_t *ctx, const boot_decoded_frame_t *frame)
+{
+    const uint16_t opcode = frame->header.opcode;
+
+    if (((opcode == BOOT_OP_DATA) || (opcode == BOOT_OP_COMMIT)) && (ctx->last_error == BOOT_ERR_NONE))
+    {
+        ctx->retry_valid = true;
+        ctx->retry_opcode = opcode;
+        ctx->retry_sequence = frame->header.sequence;
+        ctx->retry_payload_crc32 = frame->header.payload_crc32;
+    }
+    else if (!bootloader_opcode_is_read_only(opcode))
+    {
+        ctx->retry_valid = false;
+    }
+}
+
 void bootloader_receive_bytes(bootloader_t *ctx, const uint8_t *data, size_t length)
 {
     boot_decoded_frame_t frame;
     size_t index = 0U;
 
+    if (length > 0U)
+    {
+        ctx->last_rx_ms = boot_platform_millis();
+    }
+
     while (index < length)
     {
+        /* A decode error is the transport's, not a command's: it shows in
+         * GET_DIAG and leaves status and last_error alone, and the decoder
+         * carries on with the next byte. */
         const boot_error_t err = boot_decoder_consume(&ctx->decoder, &data[index], 1U, &frame);
         if (err != BOOT_ERR_NONE)
         {
             ctx->decode_error_count++;
             ctx->last_decode_error = err;
-            ctx->last_error = err;
-            ctx->status = BOOT_STATUS_ERROR;
-            break;
         }
 
         if (frame.frame_ready)
@@ -913,7 +1063,16 @@ void bootloader_receive_bytes(bootloader_t *ctx, const uint8_t *data, size_t len
             ctx->frame_ok_count++;
             ctx->last_decoded_opcode = frame.header.opcode;
             ctx->last_decoded_sequence = frame.header.sequence;
-            bootloader_handle_frame(ctx, &frame);
+            if (bootloader_frame_is_retry(ctx, &frame))
+            {
+                ctx->last_error = BOOT_ERR_NONE;
+                bootloader_send_status(ctx, frame.header.opcode, frame.header.sequence);
+            }
+            else
+            {
+                bootloader_handle_frame(ctx, &frame);
+                bootloader_note_frame_run(ctx, &frame);
+            }
         }
 
         ++index;
@@ -925,7 +1084,7 @@ void bootloader_try_boot_app(bootloader_t *ctx)
     boot_metadata_t metadata;
     boot_verify_image_response_t verify_rsp;
 
-    if (boot_platform_force_bootloader())
+    if (ctx->boot_requested)
     {
         return;
     }
