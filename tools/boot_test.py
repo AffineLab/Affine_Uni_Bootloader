@@ -38,6 +38,8 @@ def require_pyserial() -> None:
 
 BOOT_FRAME_MAGIC = 0x42464641
 BOOT_PROTOCOL_VERSION = 0x00010006
+# Boards in the field still run this one; flashing it takes the same frames.
+MIN_FLASH_PROTOCOL_VERSION = 0x00010005
 
 BOOT_OP_HELLO = 0x0001
 BOOT_OP_BEGIN = 0x0002
@@ -1193,9 +1195,18 @@ def flash_image(
     )
     protocol_version, target_id, _, app_base, slot_size, max_chunk_size, _ = parse_hello_fields(hello_payload)
     sequence += 1
-    if protocol_version != BOOT_PROTOCOL_VERSION:
+    if not MIN_FLASH_PROTOCOL_VERSION <= protocol_version <= BOOT_PROTOCOL_VERSION:
         raise RuntimeError(
-            f"protocol mismatch: device=0x{protocol_version:08X}, host=0x{BOOT_PROTOCOL_VERSION:08X}"
+            f"protocol mismatch: device=0x{protocol_version:08X}, "
+            f"host supports 0x{MIN_FLASH_PROTOCOL_VERSION:08X} to 0x{BOOT_PROTOCOL_VERSION:08X}"
+        )
+    if protocol_version < 0x00010006 and (
+        (flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0 or manifest_path is not None or manifest_key is not None
+    ):
+        print(
+            f"warning: bootloader 0x{protocol_version:08X} erases the application at BEGIN, "
+            "before it checks the signature: a refused manifest leaves no application",
+            file=sys.stderr,
         )
 
     _, device_info_payload = send_frame_and_read(
