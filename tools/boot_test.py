@@ -38,6 +38,8 @@ def require_pyserial() -> None:
 
 BOOT_FRAME_MAGIC = 0x42464641
 BOOT_PROTOCOL_VERSION = 0x00010006
+# Boards in the field still run this one; flashing it takes the same frames.
+MIN_FLASH_PROTOCOL_VERSION = 0x00010005
 
 BOOT_OP_HELLO = 0x0001
 BOOT_OP_BEGIN = 0x0002
@@ -86,7 +88,7 @@ BOOT_FLAG_NAMES = {
 APP_CMD_JUMP_TO_BOOTLOADER = 0x25
 DEFAULT_USB_VID = 0xAFF1
 DEFAULT_G431_BOOTLOADER_PID = 0x52B0
-DEFAULT_APP_PID = 0x52A6
+DEFAULT_APP_PIDS = (0x52A5, 0x52A6)  # Mai controller role 1P / 2P
 
 TARGET_DEFAULTS = {
     0x46303732: {
@@ -456,10 +458,15 @@ def find_port_info(port_name: str) -> object | None:
     return None
 
 
-def port_matches(port_info: object, vid: int | None, pid: int | None, serial_number: str | None) -> bool:
+def port_matches(
+    port_info: object,
+    vid: int | None,
+    pid: int | tuple[int, ...] | None,
+    serial_number: str | None,
+) -> bool:
     if vid is not None and getattr(port_info, "vid", None) != vid:
         return False
-    if pid is not None and getattr(port_info, "pid", None) != pid:
+    if pid is not None and getattr(port_info, "pid", None) not in (pid if isinstance(pid, tuple) else (pid,)):
         return False
     if serial_number:
         port_serial = getattr(port_info, "serial_number", None)
@@ -470,7 +477,7 @@ def port_matches(port_info: object, vid: int | None, pid: int | None, serial_num
 
 def wait_for_usb_port(
     vid: int | None,
-    pid: int | None,
+    pid: int | tuple[int, ...] | None,
     serial_number: str | None,
     timeout: float,
     label: str,
@@ -491,6 +498,38 @@ def wait_for_usb_port(
         time.sleep(0.1)
 
     raise RuntimeError(f"timed out waiting for {label} USB port, last seen: {last_seen}")
+
+
+def wait_after_reboot(
+    vid: int | None,
+    bootloader_pid: int | None,
+    app_pid: int | tuple[int, ...] | None,
+    serial_number: str | None,
+    timeout: float,
+) -> None:
+    """Reports where a reboot ended up: the application, or the bootloader if it stays there.
+
+    The bootloader enumerates first and hands over to a valid application after
+    its auto-boot window, so seeing it means nothing until the timeout has passed.
+    """
+    deadline = time.monotonic() + timeout
+    bootloader_port = None
+
+    while True:
+        bootloader_port = None
+        for port_info in list_ports.comports():
+            if port_matches(port_info, vid, app_pid, serial_number):
+                print(f"application port: {describe_port(port_info)}")
+                return
+            if port_matches(port_info, vid, bootloader_pid, serial_number):
+                bootloader_port = port_info
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+
+    if bootloader_port is None:
+        raise RuntimeError(f"no USB port came back within {timeout:g} s of the reboot")
+    print(f"bootloader port: {describe_port(bootloader_port)} (stayed in the bootloader)")
 
 
 def resolve_wait_serial(port_name: str, explicit_serial: str | None) -> str | None:
@@ -920,17 +959,19 @@ def send_frame_and_read(
     for attempt in range(1, retries + 1):
         if clear_input:
             port.reset_input_buffer()
-        print(f"{tag} Tx[{attempt}/{retries}]: {format_hex(tx_frame)}")
-        port.write(tx_frame)
-        port.flush()
 
         wait = (response_timeout if response_timeout is not None else (previous_timeout or 1.0)) + response_allowance(
             port, len(tx_frame)
         )
-        deadline = time.monotonic() + wait
         mismatch: str | None = None
         try:
+            # Before the write: setting the timeout is a USB control transfer on
+            # usbser, which fails while the frame has the bootloader erasing flash.
             port.timeout = wait
+            print(f"{tag} Tx[{attempt}/{retries}]: {format_hex(tx_frame)}")
+            port.write(tx_frame)
+            port.flush()
+            deadline = time.monotonic() + wait
             while True:
                 header, rx_payload, rx_frame = read_frame(port, deadline)
                 _, rx_opcode, rx_sequence, _, _, _ = header
@@ -964,7 +1005,7 @@ def send_frame_and_read(
 
 def send_simple_app_jump(port: serial.Serial, retries: int, retry_interval: float) -> None:
     frame = build_app_command(APP_CMD_JUMP_TO_BOOTLOADER)
-    ack = bytes([0xFF, APP_CMD_JUMP_TO_BOOTLOADER, 0x01, 0x01, 0x26])
+    ack = build_app_command(APP_CMD_JUMP_TO_BOOTLOADER, b"\x01")
     disconnect_markers = (
         "device does not recognize the command",
         "device attached to the system is not functioning",
@@ -979,26 +1020,28 @@ def send_simple_app_jump(port: serial.Serial, retries: int, retry_interval: floa
         deadline = time.monotonic() + max(float(port.timeout or 0.0), 0.5)
         reply = bytearray()
         while time.monotonic() < deadline:
+            # Only what has arrived: a blocking read for more than the ack is
+            # still waiting when the board resets, and may lose it to the error.
             try:
-                chunk = port.read(32)
+                waiting = port.in_waiting
+                chunk = port.read(waiting) if waiting else b""
             except serial.SerialException as exc:
                 message = str(exc).lower()
                 if any(marker in message for marker in disconnect_markers):
+                    got = f", got {format_hex(reply)}" if reply else ""
                     print(
-                        f"app-jump Rx[{attempt}/{retries}]: device disconnected during jump, assuming success"
+                        f"app-jump Rx[{attempt}/{retries}]: no ack (older firmware or port closed){got}; "
+                        "device disconnected during jump, assuming success"
                     )
                     return
                 raise
             if chunk:
                 reply.extend(chunk)
                 if ack in reply:
-                    print(f"app-jump Rx[{attempt}/{retries}]: {format_hex(ack)}")
+                    print(f"app-jump Rx[{attempt}/{retries}]: {format_hex(ack)} (ack received)")
                     return
                 continue
-            time.sleep(0.01)
-        if ack in reply:
-            print(f"app-jump Rx[{attempt}/{retries}]: {format_hex(ack)}")
-            return
+            time.sleep(0.005)
         if attempt < retries:
             time.sleep(retry_interval)
             continue
@@ -1152,9 +1195,18 @@ def flash_image(
     )
     protocol_version, target_id, _, app_base, slot_size, max_chunk_size, _ = parse_hello_fields(hello_payload)
     sequence += 1
-    if protocol_version != BOOT_PROTOCOL_VERSION:
+    if not MIN_FLASH_PROTOCOL_VERSION <= protocol_version <= BOOT_PROTOCOL_VERSION:
         raise RuntimeError(
-            f"protocol mismatch: device=0x{protocol_version:08X}, host=0x{BOOT_PROTOCOL_VERSION:08X}"
+            f"protocol mismatch: device=0x{protocol_version:08X}, "
+            f"host supports 0x{MIN_FLASH_PROTOCOL_VERSION:08X} to 0x{BOOT_PROTOCOL_VERSION:08X}"
+        )
+    if protocol_version < 0x00010006 and (
+        (flags & BOOT_FLAG_VERIFY_SIGNATURE) != 0 or manifest_path is not None or manifest_key is not None
+    ):
+        print(
+            f"warning: bootloader 0x{protocol_version:08X} erases the application at BEGIN, "
+            "before it checks the signature: a refused manifest leaves no application",
+            file=sys.stderr,
         )
 
     _, device_info_payload = send_frame_and_read(
@@ -1664,13 +1716,18 @@ def main() -> int:
         type=parse_int_auto,
         help="bootloader USB PID used for wait matching; defaults from --target-id or G431",
     )
-    parser.add_argument("--app-pid", type=parse_int_auto, default=DEFAULT_APP_PID, help="application USB PID used for wait matching")
+    parser.add_argument(
+        "--app-pid",
+        type=parse_int_auto,
+        default=DEFAULT_APP_PIDS,
+        help="application USB PID used for wait matching (default: either Mai role, 0x52A5 or 0x52A6)",
+    )
     parser.add_argument(
         "--no-wait-bootloader",
         dest="wait_bootloader",
         action="store_false",
         default=True,
-        help="do not wait for the bootloader COM port after app-jump",
+        help="do not wait for the COM port to come back after app-jump or reboot",
     )
     parser.add_argument("--wait-app", action="store_true", help="wait for the application COM port after --run")
     parser.add_argument("--dry-run", action="store_true", help="build and print frames without opening the port")
@@ -1914,12 +1971,12 @@ def main() -> int:
             if opcode == BOOT_OP_REBOOT and args.wait_bootloader and not uart:
                 port.close()
                 time.sleep(args.reconnect_delay)
-                wait_for_usb_port(
+                wait_after_reboot(
                     args.usb_vid,
                     args.bootloader_pid,
+                    args.app_pid,
                     device_serial,
                     args.wait_timeout,
-                    "bootloader",
                 )
                 return 0
 
