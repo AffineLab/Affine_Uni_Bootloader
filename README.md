@@ -250,7 +250,7 @@ py tools\boot_test.py COM0 flash firmware.bin `
 ```
 
 When `--app-jump` is used, the tool can wait for the bootloader USB PID to re-enumerate and continue on the new COM port. When `--run --wait-app` is used, it can also wait for the application USB PID after `BOOT_APP`.
-The `reboot` command also waits for the bootloader USB PID by default; use `--no-wait-bootloader` to only send the command.
+The `reboot` command waits to see where the board ends up, the application or the bootloader, and reports it; use `--no-wait-bootloader` to only send the command.
 
 Install the Python serial dependency if needed:
 
