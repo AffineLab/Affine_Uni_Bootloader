@@ -82,16 +82,17 @@ option(AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY "Require signed anti-rollback updat
 option(AFFINE_BUILD_STM32F072 "Build STM32F072 bootloader target" OFF)
 set(AFFINE_BOOT_F072_BOARD "monica" CACHE STRING "STM32F072 board: monica or monica_lite_r1")
 option(AFFINE_BOOT_F072_ROM_LOADER_ESCAPE "monica_lite_r1: let the application ask for the MCU ROM loader (development only)" OFF)
-# How the host reaches the bootloader: usb (USB CDC) or uart (a USART, for
-# boards without USB and MCUs behind a master; STM32F072 only so far, pins in
-# targets/stm32f072/board_pins.h). See docs/uart-transport.md.
-set(AFFINE_BOOT_TRANSPORT "usb" CACHE STRING "Bootloader transport: usb or uart")
-set_property(CACHE AFFINE_BOOT_TRANSPORT PROPERTY STRINGS usb uart)
-if(NOT AFFINE_BOOT_TRANSPORT MATCHES "^(usb|uart)$")
-    message(FATAL_ERROR "Unknown AFFINE_BOOT_TRANSPORT: ${AFFINE_BOOT_TRANSPORT} (usb or uart)")
+# How the host reaches the bootloader: usb (USB CDC), uart (a USART, for boards
+# without USB and MCUs behind a master), or dual (both: the first valid frame
+# picks one until the next reset). uart and dual are STM32F072 only so far, pins
+# in targets/stm32f072/board_pins.h. See docs/uart-transport.md.
+set(AFFINE_BOOT_TRANSPORT "usb" CACHE STRING "Bootloader transport: usb, uart or dual")
+set_property(CACHE AFFINE_BOOT_TRANSPORT PROPERTY STRINGS usb uart dual)
+if(NOT AFFINE_BOOT_TRANSPORT MATCHES "^(usb|uart|dual)$")
+    message(FATAL_ERROR "Unknown AFFINE_BOOT_TRANSPORT: ${AFFINE_BOOT_TRANSPORT} (usb, uart or dual)")
 endif()
-if(AFFINE_BOOT_TRANSPORT STREQUAL "uart" AND (AFFINE_BUILD_STM32G431 OR AFFINE_BUILD_STM32H503))
-    message(FATAL_ERROR "AFFINE_BOOT_TRANSPORT=uart is only implemented for STM32F072 so far")
+if(NOT AFFINE_BOOT_TRANSPORT STREQUAL "usb" AND (AFFINE_BUILD_STM32G431 OR AFFINE_BUILD_STM32H503))
+    message(FATAL_ERROR "AFFINE_BOOT_TRANSPORT=${AFFINE_BOOT_TRANSPORT} is only implemented for STM32F072 so far")
 endif()
 
 if(AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY)
@@ -346,10 +347,15 @@ if(AFFINE_BUILD_STM32F072)
         message(FATAL_ERROR "Unknown AFFINE_BOOT_F072_BOARD: ${AFFINE_BOOT_F072_BOARD}")
     endif()
 
-    if(AFFINE_BOOT_TRANSPORT STREQUAL "uart")
-        set(STM32F072_TRANSPORT_SOURCES ${STM32F072_TARGET_DIR}/transport_uart.c)
-    else()
-        set(STM32F072_TRANSPORT_SOURCES
+    set(STM32F072_TRANSPORT_SOURCES ${STM32F072_TARGET_DIR}/transport.c)
+    if(NOT AFFINE_BOOT_TRANSPORT STREQUAL "usb")
+        list(APPEND STM32F072_TRANSPORT_SOURCES ${STM32F072_TARGET_DIR}/transport_uart.c)
+    endif()
+    if(AFFINE_BOOT_TRANSPORT STREQUAL "dual")
+        list(APPEND STM32F072_TRANSPORT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/targets/common/boot_rx_arbiter.c)
+    endif()
+    if(NOT AFFINE_BOOT_TRANSPORT STREQUAL "uart")
+        list(APPEND STM32F072_TRANSPORT_SOURCES
             ${STM32F072_TARGET_DIR}/transport_usb.c
             ${STM32F072_TARGET_DIR}/usb.c
             ${STM32F072_TARGET_DIR}/usbd_desc.c
@@ -414,6 +420,8 @@ if(AFFINE_BUILD_STM32F072)
     )
     if(AFFINE_BOOT_TRANSPORT STREQUAL "uart")
         target_compile_definitions(bootloader_stm32f072 PRIVATE AFFINE_BOOT_TRANSPORT_UART=1)
+    elseif(AFFINE_BOOT_TRANSPORT STREQUAL "dual")
+        target_compile_definitions(bootloader_stm32f072 PRIVATE AFFINE_BOOT_TRANSPORT_DUAL=1)
     endif()
     if(AFFINE_BOOT_F072_BOARD STREQUAL "monica_lite_r1")
         target_compile_definitions(bootloader_stm32f072 PRIVATE AFFINE_BOARD_MONICA_LITE_R1)

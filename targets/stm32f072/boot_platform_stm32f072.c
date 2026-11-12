@@ -165,7 +165,6 @@ boot_error_t boot_platform_flash_write(uint32_t address, const uint8_t *data, ui
 
 void boot_platform_jump_to_app(uint32_t app_base)
 {
-    void (*app_reset_handler)(void);
     uint32_t app_stack = *(volatile uint32_t *)app_base;
     uint32_t app_reset = *(volatile uint32_t *)(app_base + 4U);
 
@@ -193,9 +192,20 @@ void boot_platform_jump_to_app(uint32_t app_base)
     __DSB();
     __ISB();
 
-    __set_MSP(app_stack);
-    app_reset_handler = (void (*)(void))app_reset;
-    app_reset_handler();
+    /*
+     * __set_MSP() 只写 MSP，编译器并不知道栈已经被换掉。若之后还需要从栈上取
+     * app_reset（-Os 下很常见），就会用新的 SP 去读 [sp, #4]——此时 SP 已经是
+     * App 的栈顶，[sp, #4] 落在 SRAM 之外，直接总线错误 → HardFault，
+     * App 的复位入口一条指令都执行不到。
+     *
+     * 所以把 msr + bx 放进同一段内联汇编：两个值都是输入约束，编译器必须在
+     * 切栈之前就把它们放进寄存器，切栈之后不再碰任何栈上数据。
+     */
+    __ASM volatile ("msr msp, %0\n\t"
+                    "bx  %1\n\t"
+                    :
+                    : "r" (app_stack), "r" (app_reset)
+                    : );
 
     for (;;)
     {
@@ -239,8 +249,13 @@ void boot_platform_reboot(void)
     __ISB();
 
     __enable_irq();
-    __set_MSP(vectors[0]);
-    ((void (*)(void))vectors[1])();
+
+    /* 同上：切栈和跳转必须在同一段内联汇编里，切栈后不能再引用栈上数据。 */
+    __ASM volatile ("msr msp, %0\n\t"
+                    "bx  %1\n\t"
+                    :
+                    : "r" (vectors[0]), "r" (vectors[1])
+                    : );
 
     for (;;)
     {

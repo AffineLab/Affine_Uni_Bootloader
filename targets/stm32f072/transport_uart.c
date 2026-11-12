@@ -1,5 +1,5 @@
 /*
- * UART transport (AFFINE_BOOT_TRANSPORT=uart): one USART, register level, for
+ * UART transport (AFFINE_BOOT_TRANSPORT=uart or dual): one USART, register level, for
  * boards without USB and for an MCU flashed through a master that forwards
  * the bytes. Pins and baud rate: board_pins.h.
  *
@@ -64,7 +64,7 @@ static void boot_uart_pin_alternate(uint32_t pin)
     F072_BOOT_UART_GPIO->MODER = (F072_BOOT_UART_GPIO->MODER & ~(3UL << shift2)) | (2UL << shift2);
 }
 
-void boot_stm32f072_transport_init(void)
+void boot_stm32f072_uart_transport_init(void)
 {
     const uint32_t pclk = HAL_RCC_GetPCLK1Freq();
 
@@ -108,16 +108,16 @@ void BOOT_UART_IRQHandler(void)
         g_uart_diag.rx_byte_count++;
         g_uart_diag.rx_last_len = 1U;
         g_uart_diag.last_rx_tick_ms = HAL_GetTick();
-        boot_stm32f072_receive_isr(&byte, 1U);
+        boot_stm32f072_receive_isr(BOOT_RX_CHANNEL_UART, &byte, 1U);
     }
 }
 
-void boot_stm32f072_transport_note_rx_overflow(void)
+void boot_stm32f072_uart_transport_note_rx_overflow(void)
 {
     g_uart_diag.rx_fifo_overflow_count++;
 }
 
-void boot_platform_transport_send(const uint8_t *data, size_t length)
+void boot_stm32f072_uart_transport_send(const uint8_t *data, size_t length)
 {
     g_uart_diag.tx_enqueue_count++;
     g_uart_diag.tx_start_count++;
@@ -143,12 +143,7 @@ void boot_platform_transport_send(const uint8_t *data, size_t length)
     g_uart_diag.last_tx_complete_tick_ms = HAL_GetTick();
 }
 
-void boot_platform_transport_poll(void)
-{
-    /* Nothing queued: send() returns once everything is out. */
-}
-
-bool boot_platform_transport_get_diag(boot_diag_response_t *out_diag)
+bool boot_stm32f072_uart_transport_get_diag(boot_diag_response_t *out_diag)
 {
     if (out_diag == NULL)
     {
