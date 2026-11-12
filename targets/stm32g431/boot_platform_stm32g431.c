@@ -8,6 +8,7 @@
 #include "stm32g4xx_hal_flash_ex.h"
 #include "usbd_cdc_acm_if.h"
 
+#include "targets/common/boot_jump.h"
 #include "targets/common/boot_target_common.h"
 #include "targets/stm32g431/board_config.h"
 
@@ -250,7 +251,6 @@ boot_error_t boot_platform_flash_write(uint32_t address, const uint8_t *data, ui
 
 void boot_platform_jump_to_app(uint32_t app_base)
 {
-    void (*app_reset_handler)(void);
     uint32_t app_stack = *(volatile uint32_t *)app_base;
     uint32_t app_reset = *(volatile uint32_t *)(app_base + 4U);
 
@@ -273,13 +273,7 @@ void boot_platform_jump_to_app(uint32_t app_base)
     __DSB();
     __ISB();
 
-    __set_MSP(app_stack);
-    app_reset_handler = (void (*)(void))app_reset;
-    app_reset_handler();
-
-    for (;;)
-    {
-    }
+    boot_jump_with_stack(app_stack, app_reset);
 }
 
 void boot_platform_reboot(void)
