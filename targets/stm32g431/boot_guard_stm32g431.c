@@ -21,6 +21,7 @@
 #include "stm32g4xx.h"
 
 #include "boot_protocol.h"
+#include "targets/common/boot_jump.h"
 
 #define BOOT_GUARD_MAGIC           0x44524147UL /* "GARD" */
 #define BOOT_GUARD_RECORD_ADDRESS  0x080001D8UL /* right behind the 118-word vector table */
@@ -56,12 +57,7 @@ static void boot_guard_enter_rom_loader(void)
     __DSB();
     __ISB();
 
-    __set_MSP(loader[0]);
-    ((void (*)(void))loader[1])();
-
-    for (;;)
-    {
-    }
+    boot_jump_with_stack(loader[0], loader[1]);
 }
 
 __attribute__((section(".guard"), noinline, used))

@@ -20,6 +20,7 @@
 #include "stm32f0xx.h"
 
 #include "boot_protocol.h"
+#include "targets/common/boot_jump.h"
 
 #define BOOT_GUARD_MAGIC           0x44524147UL /* "GARD" */
 #define BOOT_GUARD_RECORD_ADDRESS  0x080000C0UL /* right behind the 48-word vector table */
@@ -55,12 +56,7 @@ static void boot_guard_enter_rom_loader(void)
     SYSCFG->CFGR1 = (SYSCFG->CFGR1 & ~SYSCFG_CFGR1_MEM_MODE) | SYSCFG_CFGR1_MEM_MODE_0;
     (void)SYSCFG->CFGR1;
 
-    __set_MSP(loader[0]);
-    ((void (*)(void))loader[1])();
-
-    for (;;)
-    {
-    }
+    boot_jump_with_stack(loader[0], loader[1]);
 }
 
 __attribute__((section(".guard"), noinline, used))
