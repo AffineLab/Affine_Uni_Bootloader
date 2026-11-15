@@ -1,10 +1,16 @@
 # RP2350 secure Arm reference port
 
-Standalone CMake project, `PICO_PLATFORM=rp2350-arm-s`, `PICO_BOARD=pico2`.
+Standalone CMake project, `PICO_PLATFORM=rp2350-arm-s`. `AFFINE_RP2350_BOARD`
+selects `pico2` (default, SDK `PICO_BOARD=pico2`) or `rp2354` (RP2350 with
+2 MiB in-package flash, [boards/affine_rp2354.h](boards/affine_rp2354.h): 12 MHz
+crystal, no board pins used, so it also suits RP2354B). Both builds share the
+target, layout and USB identity and differ only in board ID.
 No RISC-V, Non-secure execution, core-1 launch, OTP access, hardware secure boot,
 partition-table provisioning, or bootloader self-update is implemented.
 All identities are **proposals**: target R235 `0x52323335`, layout R23A
-`0x52323341`, Pico 2 board R23P `0x52323350`, revision 1, USB `AFF1:52B4`.
+`0x52323341`, boards Pico 2 R23P `0x52323350` and RP2354 R354 `0x52333534`,
+revision 1, USB `AFF1:52B4`. Metadata and security state record the board ID, so
+after switching between the two builds the application must be flashed again.
 
 ## Dependencies and build
 
@@ -21,7 +27,8 @@ No signing/encryption/OTP command is invoked in the build.
 
 ```sh
 cmake -S targets/rp2350 -B build-rp2350 -G Ninja \
-  -DCMAKE_BUILD_TYPE=MinSizeRel -DPICO_SDK_PATH=/path/to/pico-sdk \
+  -DCMAKE_BUILD_TYPE=MinSizeRel -DAFFINE_RP2350_BOARD=pico2 \
+  -DPICO_SDK_PATH=/path/to/pico-sdk \
   -Dpicotool_DIR=/path/to/picotool-install/picotool
 cmake --build build-rp2350
 python3 tools/check_rp2350.py build-rp2350
@@ -41,8 +48,9 @@ runtime, this TinyUSB CDC adapter and all shared core sources measured **23,620
 bytes BIN**, **48,128 bytes UF2**, `size`: text 27,716 / data 0 / BSS 12,152.
 Flash/jump entry points were measurement-only stubs; no app address was fixed.
 Rounded to six 4 KiB sectors (24 KiB), plus two sectors headroom gives **32 KiB**.
-The completed port measured **26,528 bytes BIN**, leaving **6,240 bytes**.
-These are build measurements, not board measurements.
+The completed port measured **26,528 bytes BIN** (RP2354 build 26,540). The
+linker caps the image at **28 KiB**: the region's last sector is left for the
+E10 UF2 block (below), so 2,144 bytes of headroom remain.
 
 | Region | Inclusive addresses | Size |
 | --- | --- | --- |
@@ -72,15 +80,19 @@ Paths in this table are relative to the pinned pico-sdk unless stated otherwise.
 | **6. Clock/runtime restart** | `src/rp2_common/pico_runtime_init/runtime_init_clocks.c:44-61` disables resuscitation and switches sys/ref away from auxiliary sources before PLL initialization; it restarts ticks at `:145-147`. `runtime_init.c:57-87,145-156` resets peripherals without disturbing XIP/live PLLs and subsequently unresets them, including USB. `src/rp2_common/hardware_irq/irq.c:704-721` resets priorities and enables interrupts. Thus clocks are left running at SDK defaults; USB is explicitly reset because early runtime resets exclude it. App must retain normal SDK initialization. This is source proof, not jump validation on silicon. |
 | **7. Request = watchdog scratch[0]** | `src/rp2350/hardware_regs/include/hardware/regs/watchdog.h:111-119` specifies retention through soft reset. `hardware_watchdog/watchdog.c:92-108` uses 4-7; CRT0 `:438-451` uses 2-7 for RAM-image boot. Datasheet sections 5.2.4 / 5.2.4.1 (printed p342-343) describe bootrom's 4-7 vector and 2-3 parameters; scratch 0 is outside these reservations. The request is consumed/cleared once, including when its value is not magic. Use watchdog soft reset; RUN/power or chip-level reset does not guarantee retention (datasheet 12.9.5). |
 | **8. Vectors first, IMAGE_DEF after** | `src/rp2_common/pico_standard_link/script_include/section_default_text.incl:26-33` retains vectors, binary-info header, embedded block in that order. `src/rp2_common/pico_crt0/embedded_start_block.inc.S:85-95` emits IMAGE_DEF. The app overrides `pico_flash_region.ld` through `pico_add_linker_script_override_path` (`pico_standard_link/CMakeLists.txt:96-127`), setting origin `0x10008000` and length `0x1F6000`; changing flash size alone cannot relocate it. Built ELF/BIN confirm vectors at `0x10008000`, IMAGE_DEF at `0x10008138`, initial SP `0x20082000`. |
-| **9. picotool / E10 / family** | `src/cmake/on_device.cmake:79-81,110-111` permits `PICO_NO_PICOTOOL` for ordinary ELF/BIN but disables UF2/postprocessing. This target requires the installed tool and UF2 output. `tools/CMakeLists.txt:615-654` adds `--abs-block` with Pico 2's A2 support and passes the secure Arm family. `src/common/boot_uf2_headers/include/boot/uf2.h:33-38` defines Arm-S `0xE48BFF59`, absolute `0xE48BFF57`. Pinned **picotool** `elf2uf2/elf2uf2.cpp:130-170` prepends an EF-filled absolute block, block 0 of 2, with `RP2_IGNORE_BLOCK` extension; `main.cpp:679` defaults its address to `0x10FFFF00`. No custom converter is used. |
+| **9. picotool / E10 / family** | `src/cmake/on_device.cmake:79-81,110-111` permits `PICO_NO_PICOTOOL` for ordinary ELF/BIN but disables UF2/postprocessing. This target requires the installed tool and UF2 output. `tools/CMakeLists.txt:615-654` adds `--abs-block` with Pico 2's A2 support and passes the secure Arm family. `src/common/boot_uf2_headers/include/boot/uf2.h:33-38` defines Arm-S `0xE48BFF59`, absolute `0xE48BFF57`. Pinned **picotool** `elf2uf2/elf2uf2.cpp:130-170` prepends an EF-filled absolute block, block 0 of 2, with `RP2_IGNORE_BLOCK` extension; `main.cpp:679` defaults its address to `0x10FFFF00`. The bootloader passes `--abs-block 0x10007F00` through `PICOTOOL_EXTRA_UF2_ARGS` (`tools/CMakeLists.txt:614-620` keeps an explicit `--abs-block`). No custom converter is used. |
 
 Datasheet used offline: RP2350 Datasheet, local `rp2350.pdf`, SHA256
 `a638d6780da919162660691bfa02c6dcf7c2a0b6e9f18e2d7519c80b664a2e39`.
 Its Appendix D.2.1 (printed p1351) confirms that the E10 workaround writes the
 last flash block on A2 and can overwrite user data; A3+ honors the ignore-block
-extension. **BOOTSEL UF2 recovery on A2 can erase metadata at the end of flash.**
-Treat it as recovery/reprovisioning, not a metadata-preserving update. Do not use
-the test-app UF2 to test the bootloader's commit/jump flow; use its BIN below.
+extension. If the flash ignores address bits above its size, the default
+`0x10FFFF00` lands on its last sector: harmless on Pico 2's 4 MiB, but metadata
+copy 1 on a 2 MiB RP2354. The bootloader UF2 therefore targets `0x10007F00`,
+inside the boot region's unused last sector, so that by design a BOOTSEL
+reinstall keeps both metadata copies on A2 too (`tools/check_rp2350.py` checks
+the address). Neither the wrap nor A2's handling has been observed on silicon. The test-app UF2 keeps the default;
+install the app as BIN through the protocol, never by BOOTSEL.
 
 ## Application contract and test app
 
@@ -104,25 +116,26 @@ through `tools/boot_test.py COMx flash build-rp2350/test_app/rp2350_test_app.bin
 --run`, so committed metadata exists. It then returns to the bootloader and stays
 there after the request is consumed; an explicit run can repeat the cycle.
 
-## Untested board checklist
+## Board results
 
-1. Confirm Pico 2 / RP2354 wiring, flash part, silicon revision and SWD/BOOTSEL
-   recovery. Load only the boot image at `0x10000000`; account for A2's UF2
-   metadata erase above. Do not provision OTP or enable hardware secure boot.
-2. Confirm CDC `AFF1:52B4`; run `probe` / `diag`, checking proposed IDs, 4-byte
-   writes, 4096-byte erases, app/metadata bounds and one-second host window.
-3. Flash the test-app BIN through the protocol, then verify automatic and
-   explicit jump, app interrupts/timers/clocks, two-second reset and one-shot
-   scratch request. Repeat cold boot, watchdog reset, RUN and BOOTSEL recovery.
-4. Exercise short 4-byte and page-crossing writes, 64-byte packet/ZLP boundaries,
-   532-byte frames, retries, suspend and reconnect; check diagnostics and USB
-   progress during a full-slot erase. Measure worst sector/signature timing
-   against the 8-second watchdog and host retry timeout.
-5. Validate unsigned/signed/encrypted/rollback flows with reviewed test keys,
-   both metadata copies, state preservation on clear, boot-region protection,
-   and interrupted erase/program/commit. Check RP2354's fitted flash repeated
-   partial-page programming as well as the Pico 2's flash.
+Raspberry Pi Pico 2, RP2350A, `chip_id` revision 3 (A3/A4, so E10 itself could
+not be reproduced), Windows 11 host, 2026-11-16. No OTP write, no secure boot.
 
-Host fakes execute port code but not SDK drivers/MMIO; ELF/UF2 inspection proves
-layout/format only. USB enumeration, flash endurance/power-loss behavior,
-watchdog timing, jump/re-entry and RP2354 compatibility all require board tests.
+| Check | Result |
+| --- | --- |
+| BOOTSEL install, enumeration | UF2 copy, `AFF1:52B4` CDC; IDs, 4-byte writes, 4096-byte erases and bounds as above |
+| Auto-boot, re-entry | Bootloader 0.3 s after reset, jump at 1.5 s, test app's scratch request back at 3.8 s, then stays (one-shot) |
+| Explicit run | `flash --run`: app 0.1 s after the answer, back in the bootloader 2.3 s later |
+| App after jump | A pico-sdk app with USB stdio, timers and `getchar` enumerates and runs |
+| Full slot | 2000 KiB: 500 sectors erased in 6.6 s worst case, 143 KB/s DATA, 17-23 s total with `boot_test.py`; no watchdog reset, no USB drops; boot-time CRC over 2 MiB adds 0.4 s |
+| Write edges | 505 DATA frames of 4-256 bytes, 244 crossing a page, frames of 64/128/192/256 bytes, 32 duplicates; COMMIT CRC correct |
+| Rejections | Wrong target/board/layout: BAD_TARGET; offset gap: RANGE |
+| Interrupted update | Stays in the bootloader: IMAGE_CRC (vectors intact) or NO_VALID_APP (first sector gone) |
+| Security, test-key build | Signed (key id 2), encrypted + anti-rollback: committed, encrypted app runs. Foreign key, unknown key id, another image's manifest, encryption without signature, wrong AES key: refused. Floor 5 blocks version 3; kept by `clear-metadata`; version 6 accepted. Default policy: an unsigned update is still accepted below the floor |
+| BOOTSEL reinstall | Metadata kept, app boots 1.8 s after the copy (6 of 6); E10 block at `0x10007F00`, ignored by this A3+ bootrom |
+| RP2354 build | Runs on Pico 2: reports R354, flashes and cycles. Not run on RP2354 silicon |
+
+Not tested: RP2354 silicon (its flash's repeated partial-page programming, A2
+E10 behaviour), A2 silicon at all, cold power cycle and power loss during
+erase/program/commit, RUN-pin reset, USB suspend, signed images near the 8 s
+watchdog. Host fakes cover port code but not SDK drivers or MMIO.
