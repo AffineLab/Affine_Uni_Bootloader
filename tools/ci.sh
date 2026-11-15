@@ -130,3 +130,6 @@ check_size STM32F072-UART "${BUILD_ROOT}/stm32f072-uart/bootloader_stm32f072.bin
 check_size STM32F072-DUAL "${BUILD_ROOT}/stm32f072-dual/bootloader_stm32f072.bin"
 check_size STM32G431 "${BUILD_ROOT}/stm32g431/bootloader_stm32g431.bin"
 check_size STM32H503 "${BUILD_ROOT}/stm32h503/bootloader_stm32h503.bin"
+
+# The core and the STM32F072 dual-transport code built for the host.
+python3 tests/host/run.py --build-dir "${BUILD_ROOT}/host"
