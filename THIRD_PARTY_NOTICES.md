@@ -42,6 +42,17 @@ The AT32F405 build uses [ArteryTek/AT32F402_405_Firmware_Library](https://github
 
 The SDK's top-level `LICENSE` identifies BSD 3-Clause (Copyright (c) 2022, Artery-MCU). Its source headers carry a separate BSP notice (Copyright (c) 2025, Artery Technology), authorizing use, copying and distribution for design and development in conjunction with Artery microcontrollers, with an as-is warranty disclaimer. Those terms remain applicable to the external SDK and binaries incorporating it; the SDK is not relicensed as Apache-2.0. Retain the SDK license and notices when redistributing such binaries. The BSD conditions and disclaimer are reproduced below; consult the pinned SDK's source headers for the BSP notice.
 
+## External Raspberry Pi dependencies (not vendored)
+
+The RP2350 build uses pico-sdk 2.3.1 at `079c6f39023649b154152db30f1d781e884879bc`
+and TinyUSB at `86ad6e56c1700e85f1c5678607a762cfe3aa2f47`; picotool 2.3.1 at
+`2041936441b48a3cc53ae3da9e805229fe8f4e18` generates UF2 output. No sources from
+these projects are copied here. pico-sdk's top-level license is BSD 3-Clause;
+TinyUSB is MIT. picotool and SDK components retain their own source notices.
+When redistributing firmware/tools, retain the applicable external license texts
+and notices, including those of SDK components actually linked. See
+`targets/rp2350/PORTING.md` for configuration and pinned-fetch details.
+
 ## BSD 3-Clause License Text
 
 The BSD 3-Clause conditions and disclaimer below apply to components identified above under that license; their respective copyright notices remain applicable.
