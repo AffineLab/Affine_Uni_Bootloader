@@ -360,8 +360,8 @@ def read_frame(
     the pins come up): look for the frame magic byte by byte, and treat a
     header whose CRC does not check out as a false start one byte later. A
     frame with a damaged payload raises ValueError. deadline (time.monotonic())
-    bounds the whole search; without it only each read waits up to
-    port.timeout.
+    bounds the whole search, with port.timeout only how long one read blocks;
+    without it the first read that times out ends the search.
     """
     magic_bytes = struct.pack("<I", BOOT_FRAME_MAGIC)
     buf = bytearray()
@@ -373,7 +373,9 @@ def read_frame(
                 raise TimeoutError(f"timed out waiting for a frame, got {len(buf)} bytes")
             chunk = port.read(size - len(buf))
             if not chunk:
-                raise TimeoutError(f"timed out waiting for {size} bytes, got {len(buf)}")
+                if deadline is None:
+                    raise TimeoutError(f"timed out waiting for {size} bytes, got {len(buf)}")
+                continue
             buf.extend(chunk)
 
     while True:
@@ -970,20 +972,20 @@ def send_frame_and_read(
     tx_frame = build_frame(opcode, sequence, payload)
     expected_opcode = opcode | BOOT_OP_RESPONSE
     tag = label or f"opcode=0x{opcode:04X}"
-    previous_timeout = port.timeout
+    # The deadline bounds the wait; port.timeout is left alone. pyserial
+    # reconfigures the port on every assignment, which on Windows usbser is a
+    # few CDC control transfers: about 26 ms on a full-speed device, so setting
+    # and restoring it around each DATA frame cost 20x the transfer itself.
+    wait = (response_timeout if response_timeout is not None else (port.timeout or 1.0)) + response_allowance(
+        port, len(tx_frame)
+    )
 
     for attempt in range(1, retries + 1):
         if clear_input:
             port.reset_input_buffer()
 
-        wait = (response_timeout if response_timeout is not None else (previous_timeout or 1.0)) + response_allowance(
-            port, len(tx_frame)
-        )
         mismatch: str | None = None
         try:
-            # Before the write: setting the timeout is a USB control transfer on
-            # usbser, which fails while the frame has the bootloader erasing flash.
-            port.timeout = wait
             print(f"{tag} Tx[{attempt}/{retries}]: {format_hex(tx_frame)}")
             port.write(tx_frame)
             port.flush()
@@ -1013,8 +1015,6 @@ def send_frame_and_read(
             if isinstance(exc, ValueError):
                 raise TimeoutError(str(exc)) from exc
             raise
-        finally:
-            port.timeout = previous_timeout
 
     raise RuntimeError(f"{tag} exhausted retries")
 
@@ -1578,10 +1578,8 @@ def send_command(
         port.write(tx_frame)
         port.flush()
 
-        previous_timeout = port.timeout
         try:
-            wait = (previous_timeout or 1.0) + response_allowance(port, len(tx_frame))
-            port.timeout = wait
+            wait = (port.timeout or 1.0) + response_allowance(port, len(tx_frame))
             # The deadline also ends a resync over a line that never goes
             # quiet, e.g. an application printing on the same USART.
             header, rx_payload, rx_frame = read_frame(port, time.monotonic() + wait)
@@ -1591,8 +1589,6 @@ def send_command(
                 time.sleep(retry_interval)
                 continue
             return 1
-        finally:
-            port.timeout = previous_timeout
 
         _, rx_opcode, rx_sequence, _, _, _ = header
         print(f"Rx[{attempt}/{retries}]: {format_hex(rx_frame)}")
