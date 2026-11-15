@@ -1,6 +1,6 @@
 # Affine Uni Bootloader
 
-A 24 KiB STM32/AT32 bootloader for Affine boards. It takes firmware over USB CDC (or a USART on STM32F072), checks it with CRC32 and, when required, an RSA-2048 signature, and starts a standard application image with no header in front of it. The core (`src/`, `include/`) is shared; each target in `targets/` supplies flash, transport, clock and jump code.
+A USB CDC bootloader for Affine boards, with 24 KiB STM32/AT32 and 32 KiB RP2350 boot regions. It takes firmware over USB CDC (or a USART on STM32F072), checks it with CRC32 and, when required, an RSA-2048 signature, and starts a standard application image with no header in front of it. The core (`src/`, `include/`) is shared; each target in `targets/` supplies flash, transport, clock and jump code.
 
 ## Targets
 
@@ -10,8 +10,9 @@ A 24 KiB STM32/AT32 bootloader for Affine boards. It takes firmware over USB CDC
 | STM32G431 | Mai / Curva | `0x52B0` | `0x08006000`-`0x0801CFFF` (92 KiB) | `0x0801E000`- | USB |
 | AT32F405 xC | Reference (board ID proposed) | `0x52B3` (proposed) | `0x08006000`-`0x0803EFFF` (228 KiB) | `0x0803F000`- | USB FS or HS |
 | STM32H503 | Linnea | `0x52B1` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`- | USB |
+| RP2350 / RP2354 | Pico 2 reference (all IDs proposed) | `0x52B4` (proposed) | `0x10008000`-`0x101FDFFF` (2008 KiB) | `0x101FE000`- | USB FS |
 
-The bootloader occupies `0x08000000`-`0x08005FFF` on all targets; USB VID is `0xAFF1`. Target, board and layout IDs are in [include/boot_target_ids.h](include/boot_target_ids.h). `targets/stm32f401` is a memory layout template and `targets/stub` a minimal platform for bring-up.
+The bootloader occupies `0x08000000`-`0x08005FFF` on STM32/AT32 and `0x10000000`-`0x10007FFF` on RP2350; USB VID is `0xAFF1` (proposed for RP2350). Target, board and layout IDs are in [include/boot_target_ids.h](include/boot_target_ids.h). `targets/stm32f401` is a memory layout template and `targets/stub` a minimal platform for bring-up.
 
 - **STM32G431**: `0x0801D000`-`0x0801DFFF` is the application's settings page (Mai_stm32) and is never erased. The first flash page holds a boot guard that starts the ST ROM DFU loader if the rest of the bootloader is incomplete; `g431_bl_updater` replaces the bootloader in the field from an application.
 - **STM32F072**: Cortex-M0 has no VTOR, so the bootloader copies the application vectors to SRAM and remaps it: applications must start their RAM at `0x200000C0`. Monica Lite R1 builds have the same boot guard.
@@ -39,6 +40,8 @@ ninja -C build-g431 bootloader_stm32g431 g431_bl_updater
 
 `tools/release.sh` builds the release set into `dist/release/`.
 
+RP2350 is a standalone secure Arm project: `cmake -S targets/rp2350 -B build-rp2350 -G Ninja -DCMAKE_BUILD_TYPE=MinSizeRel -DPICO_SDK_PATH=<sdk> -Dpicotool_DIR=<installed-package>`, then `cmake --build build-rp2350`. It includes an offset test app by default (`AFFINE_RP2350_BUILD_TEST_APP=OFF` disables it). See [RP2350 port notes](targets/rp2350/PORTING.md) for the pinned tools, app contract, watchdog request and A2 UF2 metadata-erasure risk. This target is not yet in `tools/release.sh`.
+
 ## Flashing
 
 `tools/boot_test.py` needs Python 3 with pyserial, and openssl for signing.
@@ -60,8 +63,9 @@ An update is `BEGIN`, then `SET_MANIFEST` for a signed image, `DATA` chunks in o
 
 ## Applications
 
-- Link the application at `0x08006000` with a normal vector table, and keep clear of the metadata (and on G431 the settings page).
+- Link STM32/AT32 applications at `0x08006000`, or RP2350 applications at `0x10008000`, with a normal vector table; keep clear of metadata (and on G431 the settings page).
 - To enter the bootloader, write `0x424F4F54` to `0x20007F00` (G431, H503), `0x20019700` (AT32F405), or `0x20003F00` (F072) and reset. Otherwise the bootloader waits 1 s for a host, then starts a valid application.
+- On RP2350 write the same magic to watchdog `scratch[0]`, then call `watchdog_reboot(0, 0, 0)`; the bootloader consumes it once. No SRAM retention is assumed.
 - Committed metadata (two copies on G431, H503 and AT32F405, one on F072) holds the image size, CRC32, version and the signed manifest fields; it is checked again at every boot. After a bootloader upgrade the application has to be flashed again.
 
 ## Security
@@ -73,7 +77,7 @@ An update is `BEGIN`, then `SET_MANIFEST` for a signed image, `DATA` chunks in o
 
 ## Tests
 
-`bash tools/ci.sh` builds every target and variant, checks their size against the 24 KiB limit, and runs `tests/host/run.py`, which compiles the core and STM32F072 dual transport for simulated clean/lossy links, plus the AT32 CDC adapter against host USB fakes and the external SDK headers.
+`bash tools/ci.sh` builds the supported targets and variants, checks the 24 KiB STM32/AT32 or 32 KiB RP2350 limit, and runs `tests/host/run.py`. Host tests cover core/dual-transport clean and lossy links, AT32/RP2350 CDC adapters against fakes and external SDK headers, and RP2350 NOR page writes. `tools/check_rp2350.py <build-dir>` inspects both RP2350 ELF/BIN/UF2 artifacts without hardware.
 
 ## License
 
