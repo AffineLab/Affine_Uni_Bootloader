@@ -244,7 +244,8 @@ def main() -> int:
 
     # Actual flash adapter with a NOR model; no SDK or hardware is executed.
     rp_common = [args.cc, "-std=gnu11", "-D_GNU_SOURCE", "-O1", "-Wall", "-Wextra", "-Werror",
-                 f"-I{REPO}", f"-I{REPO / 'include'}", f"-I{REPO / 'targets/rp2350'}"]
+                 f"-I{REPO}", f"-I{REPO / 'include'}", f"-I{REPO / 'targets/rp2350'}",
+                 "-DAFFINE_RP2350_BOARD_ID=BOOT_BOARD_ID_R235_PICO2"]
     rp_flash = out / ("rp2350_flash_test.exe" if os.name == "nt" else "rp2350_flash_test")
     must([*rp_common, f"-I{HERE / 'rp2350_stub'}", HERE / "rp2350_flash_test.c",
           REPO / "targets/rp2350/flash.c", REPO / "targets/common/boot_target_common.c", "-o", rp_flash])

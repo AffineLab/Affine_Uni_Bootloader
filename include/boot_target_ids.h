@@ -1,9 +1,10 @@
 #ifndef AFFINE_BOOT_TARGET_IDS_H
 #define AFFINE_BOOT_TARGET_IDS_H
 
-/* Proposed RP2350 target, Pico 2 board and 2 MiB layout identities. */
+/* Proposed RP2350 target, Pico 2 / RP2354 board and 2 MiB layout identities. */
 #define BOOT_TARGET_ID_RP2350 0x52323335UL /* R235 */
 #define BOOT_BOARD_ID_R235_PICO2 0x52323350UL /* R23P */
+#define BOOT_BOARD_ID_R235_RP2354 0x52333534UL /* R354 */
 #define BOOT_LAYOUT_ID_R235_A 0x52323341UL /* R23A */
 
 #define BOOT_TARGET_ID_AT32F405 0x41343035UL /* A405 */

@@ -1,6 +1,6 @@
 # Affine Uni Bootloader
 
-A USB CDC bootloader for Affine boards, with 24 KiB STM32/AT32 and 32 KiB RP2350 boot regions. It takes firmware over USB CDC (or a USART on STM32F072), checks it with CRC32 and, when required, an RSA-2048 signature, and starts a standard application image with no header in front of it. The core (`src/`, `include/`) is shared; each target in `targets/` supplies flash, transport, clock and jump code.
+A USB CDC bootloader for Affine boards, with 24 KiB STM32/AT32 and 32 KiB RP2350 boot regions (the RP2350 image itself is capped at 28 KiB). It takes firmware over USB CDC (or a USART on STM32F072), checks it with CRC32 and, when required, an RSA-2048 signature, and starts a standard application image with no header in front of it. The core (`src/`, `include/`) is shared; each target in `targets/` supplies flash, transport, clock and jump code.
 
 ## Targets
 
@@ -10,7 +10,7 @@ A USB CDC bootloader for Affine boards, with 24 KiB STM32/AT32 and 32 KiB RP2350
 | STM32G431 | Mai / Curva | `0x52B0` | `0x08006000`-`0x0801CFFF` (92 KiB) | `0x0801E000`- | USB |
 | AT32F405 xC | Reference (board ID proposed) | `0x52B3` (proposed) | `0x08006000`-`0x0803EFFF` (228 KiB) | `0x0803F000`- | USB FS or HS |
 | STM32H503 | Linnea | `0x52B1` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`- | USB |
-| RP2350 / RP2354 | Pico 2 reference (all IDs proposed) | `0x52B4` (proposed) | `0x10008000`-`0x101FDFFF` (2008 KiB) | `0x101FE000`- | USB FS |
+| RP2350 / RP2354 | Pico 2 or RP2354 (`AFFINE_RP2350_BOARD`, all IDs proposed) | `0x52B4` (proposed) | `0x10008000`-`0x101FDFFF` (2008 KiB) | `0x101FE000`- | USB FS |
 
 The bootloader occupies `0x08000000`-`0x08005FFF` on STM32/AT32 and `0x10000000`-`0x10007FFF` on RP2350; USB VID is `0xAFF1` (proposed for RP2350). Target, board and layout IDs are in [include/boot_target_ids.h](include/boot_target_ids.h). `targets/stm32f401` is a memory layout template and `targets/stub` a minimal platform for bring-up.
 
@@ -40,7 +40,7 @@ ninja -C build-g431 bootloader_stm32g431 g431_bl_updater
 
 `tools/release.sh` builds the release set into `dist/release/`.
 
-RP2350 is a standalone secure Arm project: `cmake -S targets/rp2350 -B build-rp2350 -G Ninja -DCMAKE_BUILD_TYPE=MinSizeRel -DPICO_SDK_PATH=<sdk> -Dpicotool_DIR=<installed-package>`, then `cmake --build build-rp2350`. It includes an offset test app by default (`AFFINE_RP2350_BUILD_TEST_APP=OFF` disables it). See [RP2350 port notes](targets/rp2350/PORTING.md) for the pinned tools, app contract, watchdog request and A2 UF2 metadata-erasure risk. This target is not yet in `tools/release.sh`.
+RP2350 is a standalone secure Arm project: `cmake -S targets/rp2350 -B build-rp2350 -G Ninja -DCMAKE_BUILD_TYPE=MinSizeRel -DPICO_SDK_PATH=<sdk> `-Dpicotool_DIR=<installed-package>`, then `cmake --build build-rp2350`; add `-DAFFINE_RP2350_BOARD=rp2354` for RP2354. It includes an offset test app by default (`AFFINE_RP2350_BUILD_TEST_APP=OFF` disables it). See [RP2350 port notes](targets/rp2350/PORTING.md) for the pinned tools, app contract, watchdog request, E10 UF2 block and board results. This target is not yet in `tools/release.sh`.
 
 ## Flashing
 
@@ -72,12 +72,13 @@ An update is `BEGIN`, then `SET_MANIFEST` for a signed image, `DATA` chunks in o
 
 - Unsigned updates are allowed by default. Signed updates carry a manifest with an RSA-2048 PKCS#1 v1.5 signature over the target, board, layout, size, CRC, SHA-256 and versions; `key_id` selects the key.
 - `--encrypted` streams the image as AES-128-CTR ciphertext. `--anti-rollback` stores a rollback floor that later updates cannot go below; `clear-metadata` keeps it.
+- With the default policy unsigned updates bypass signature and rollback checks, and signed updates without `--anti-rollback` skip the floor. Set `AFFINE_BOOT_REQUIRE_SIGNED_UPDATES` and `AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED` where that matters.
 - The keys in `include/boot_keys.h` are for development. Production builds need their own key header and MCU readout protection.
 - On G431 and H503 a flash read that hits an ECC error from an interrupted write is counted by the NMI handler and treated as invalid data, so the board stays in the bootloader.
 
 ## Tests
 
-`bash tools/ci.sh` builds the supported targets and variants, checks the 24 KiB STM32/AT32 or 32 KiB RP2350 limit, and runs `tests/host/run.py`. Host tests cover core/dual-transport clean and lossy links, AT32/RP2350 CDC adapters against fakes and external SDK headers, and RP2350 NOR page writes. `tools/check_rp2350.py <build-dir>` inspects both RP2350 ELF/BIN/UF2 artifacts without hardware.
+`bash tools/ci.sh` builds the supported targets and variants, checks the 24 KiB STM32/AT32 or 28 KiB RP2350 image limit (Pico 2 and RP2354 builds), and runs `tests/host/run.py`. Host tests cover core/dual-transport clean and lossy links, AT32/RP2350 CDC adapters against fakes and external SDK headers, and RP2350 NOR page writes. `tools/check_rp2350.py <build-dir>` inspects both RP2350 ELF/BIN/UF2 artifacts without hardware.
 
 ## License
 

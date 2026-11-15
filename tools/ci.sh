@@ -163,11 +163,15 @@ for usb in otgfs1 otghs; do
     check_size "AT32F405-${usb}" "${BUILD_ROOT}/at32f405-${usb}/bootloader_at32f405.bin"
 done
 
-cmake -S targets/rp2350 -B "${BUILD_ROOT}/rp2350" -G Ninja \
-    -DCMAKE_BUILD_TYPE=MinSizeRel "-DPICO_SDK_PATH=${PICO_SDK_PATH}" "-Dpicotool_DIR=${picotool_DIR}"
-cmake --build "${BUILD_ROOT}/rp2350"
-check_size RP2350 "${BUILD_ROOT}/rp2350/bootloader_rp2350.bin" 32768 30720
-python3 tools/check_rp2350.py "${BUILD_ROOT}/rp2350"
+# 28 KiB: the last sector of the 32 KiB boot region holds the E10 UF2 block.
+for board in pico2 rp2354; do
+    cmake -S targets/rp2350 -B "${BUILD_ROOT}/rp2350-${board}" -G Ninja \
+        -DCMAKE_BUILD_TYPE=MinSizeRel "-DAFFINE_RP2350_BOARD=${board}" \
+        "-DPICO_SDK_PATH=${PICO_SDK_PATH}" "-Dpicotool_DIR=${picotool_DIR}"
+    cmake --build "${BUILD_ROOT}/rp2350-${board}"
+    check_size "RP2350-${board}" "${BUILD_ROOT}/rp2350-${board}/bootloader_rp2350.bin" 28672 27648
+    python3 tools/check_rp2350.py "${BUILD_ROOT}/rp2350-${board}"
+done
 
 # Core/dual transport plus AT32/RP2350 adapters; all hardware interfaces are faked.
 python3 tests/host/run.py --build-dir "${BUILD_ROOT}/host" \

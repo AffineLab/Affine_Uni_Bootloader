@@ -92,7 +92,8 @@ DEFAULT_G431_BOOTLOADER_PID = 0x52B0
 DEFAULT_APP_PIDS = (0x52A5, 0x52A6)  # Mai controller role 1P / 2P
 
 TARGET_DEFAULTS = {
-    # Proposed RP2350 target, Pico 2 board, layout and USB identity.
+    # Proposed RP2350 target, Pico 2 board, layout and USB identity. RP2354
+    # builds report board 0x52333534; real flashes use the device's IDs.
     0x52323335: {
         "name": "rp2350/pico2",
         "board_id": 0x52323350,

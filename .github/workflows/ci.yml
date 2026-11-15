@@ -61,10 +61,12 @@ jobs:
             build-ci/stm32h503/bootloader_stm32h503.bin
             build-ci/at32f405-otgfs1/bootloader_at32f405.bin
             build-ci/at32f405-otghs/bootloader_at32f405.bin
-            build-ci/rp2350/bootloader_rp2350.bin
-            build-ci/rp2350/bootloader_rp2350.uf2
-            build-ci/rp2350/test_app/rp2350_test_app.bin
-            build-ci/rp2350/test_app/rp2350_test_app.uf2
+            build-ci/rp2350-pico2/bootloader_rp2350.bin
+            build-ci/rp2350-pico2/bootloader_rp2350.uf2
+            build-ci/rp2350-rp2354/bootloader_rp2350.bin
+            build-ci/rp2350-rp2354/bootloader_rp2350.uf2
+            build-ci/rp2350-pico2/test_app/rp2350_test_app.bin
+            build-ci/rp2350-pico2/test_app/rp2350_test_app.uf2
             THIRD_PARTY_NOTICES.md
             LICENSE
 
@@ -85,9 +87,11 @@ jobs:
             build-ci/at32f405-otgfs1/bootloader_at32f405.map
             build-ci/at32f405-otghs/bootloader_at32f405.elf
             build-ci/at32f405-otghs/bootloader_at32f405.map
-            build-ci/rp2350/bootloader_rp2350.elf
-            build-ci/rp2350/bootloader_rp2350.elf.map
-            build-ci/rp2350/test_app/rp2350_test_app.elf
-            build-ci/rp2350/test_app/rp2350_test_app.elf.map
+            build-ci/rp2350-pico2/bootloader_rp2350.elf
+            build-ci/rp2350-pico2/bootloader_rp2350.elf.map
+            build-ci/rp2350-rp2354/bootloader_rp2350.elf
+            build-ci/rp2350-rp2354/bootloader_rp2350.elf.map
+            build-ci/rp2350-pico2/test_app/rp2350_test_app.elf
+            build-ci/rp2350-pico2/test_app/rp2350_test_app.elf.map
             THIRD_PARTY_NOTICES.md
             LICENSE
