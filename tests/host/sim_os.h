@@ -29,6 +29,7 @@ typedef int sim_socklen_t;
 #include <ucontext.h>
 #include <unistd.h>
 typedef int SOCKET;
+typedef socklen_t sim_socklen_t;
 #define INVALID_SOCKET (-1)
 #define closesocket close
 #define SIM_SEND_FLAGS MSG_NOSIGNAL
