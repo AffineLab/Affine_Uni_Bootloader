@@ -41,11 +41,10 @@ available for this port; these are SDK-derived values, not hardware measurements
 | USB data pins owned by USB; ignore VBUS/ID, no low-power USB or DMA | GPIO setup and `USB_VBUS_IGNORE` in the USB examples |
 | FS-only unused HS PHY power workaround | `libraries/cmsis/cm4/device_support/system_at32f402_405.c`: `reduce_power_consumption()` and its PLL/HEXT precondition (FAQ0148) |
 
-The layout assumes SRAM parity is **disabled**, matching the SDK's 102 KiB
-linker map. Confirm this option-byte setting on the board before flashing;
-the parity-enabled configuration has less usable SRAM and is not supported
-by this layout. The SDK SRAM examples use `USD_RAM_PRT_CHK_DISABLE` and
-`flash_ssb_status_get()` to inspect that setting.
+The layout uses the SDK's 102 KiB SRAM map. SRAM parity does not change it:
+an erased user system data byte leaves parity off (`USD_RAM_PRT_CHK_DISABLE`
+is bit 0x80 set), and the SDK's `sram/sram_parity_check` example, which turns
+parity on, still maps 102 KiB. `flash_ssb_status_get()` reads the setting.
 
 ## Layout and identities
 
@@ -71,8 +70,7 @@ then call `boot_jump_with_stack()`. There is no boot guard or updater.
 
 ## Board test checklist (not performed)
 
-1. Confirm the part is an AT32F405 xC, SRAM parity is disabled, supplies and
-   USB wiring match the SDK, and the HS build has a 12 MHz HEXT oscillator
+1. Confirm the part is an AT32F405 xC, supplies and USB wiring match the SDK, and the HS build has a 12 MHz HEXT oscillator
    and the required OTGHS_R connection. Keep SWD/recovery access available.
 2. Flash only the selected bootloader at `0x08000000`. With no committed
    application, verify CDC enumeration as `AFF1:52B3`; inspect FS/HS speed

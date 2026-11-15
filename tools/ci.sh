@@ -82,16 +82,19 @@ PY
         --manifest-out "${smoke_dir}/signed-encrypted-anti-rollback.manifest"
 }
 
-# Keep the SDK fetched by the workflow inside BUILD_ROOT. Firmware configure
-# directories are separate from this read-only dependency checkout.
+# Start from an empty BUILD_ROOT, except for the SDK the workflow fetched there.
 mkdir -p "${BUILD_ROOT}"
+find "${BUILD_ROOT}" -mindepth 1 -maxdepth 1 ! -name at32-sdk -exec rm -rf {} +
 AT32_SDK_COMMIT=5dd9d55a2ce9ffa8fe0cb2652ac142920f2094a3
 if [ -z "${AFFINE_AT32_SDK_DIR:-}" ]; then
     AFFINE_AT32_SDK_DIR="${BUILD_ROOT}/at32-sdk"
     bash tools/fetch_at32_sdk.sh "${AFFINE_AT32_SDK_DIR}"
 fi
-# A supplied SDK is inspected, never fetched into or modified.
-test "$(git -C "${AFFINE_AT32_SDK_DIR}" rev-parse HEAD)" = "${AT32_SDK_COMMIT}"
+# A supplied SDK is read, never fetched into or modified. CMake checks its
+# version macros; a Git checkout must also be at the pinned commit.
+if [ -e "${AFFINE_AT32_SDK_DIR}/.git" ]; then
+    test "$(git -C "${AFFINE_AT32_SDK_DIR}" rev-parse HEAD)" = "${AT32_SDK_COMMIT}"
+fi
 AFFINE_AT32_SDK_DIR="$(cd "${AFFINE_AT32_SDK_DIR}" && pwd)"
 
 python3 -m py_compile tools/boot_test.py

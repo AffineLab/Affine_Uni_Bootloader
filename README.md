@@ -61,7 +61,7 @@ An update is `BEGIN`, then `SET_MANIFEST` for a signed image, `DATA` chunks in o
 ## Applications
 
 - Link the application at `0x08006000` with a normal vector table, and keep clear of the metadata (and on G431 the settings page).
-- To enter the bootloader, write `0x424F4F54` to `0x20007F00` (G431, H503), `0x20019700` (AT32F405, 102 KiB SRAM with parity disabled), or `0x20003F00` (F072) and reset. Otherwise the bootloader waits 1 s for a host, then starts a valid application.
+- To enter the bootloader, write `0x424F4F54` to `0x20007F00` (G431, H503), `0x20019700` (AT32F405), or `0x20003F00` (F072) and reset. Otherwise the bootloader waits 1 s for a host, then starts a valid application.
 - Committed metadata (two copies on G431, H503 and AT32F405, one on F072) holds the image size, CRC32, version and the signed manifest fields; it is checked again at every boot. After a bootloader upgrade the application has to be flashed again.
 
 ## Security
