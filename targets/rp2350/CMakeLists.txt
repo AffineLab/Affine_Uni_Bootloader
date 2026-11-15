@@ -56,6 +56,10 @@ pico_add_linker_script_override_path(bootloader_rp2350 ${CMAKE_CURRENT_LIST_DIR}
 # Flash capacity is the common 2 MiB contract, independent of Pico 2's 4 MiB.
 target_compile_definitions(bootloader_rp2350 PRIVATE PICO_FLASH_SIZE_BYTES=2097152)
 pico_set_uf2_family(bootloader_rp2350 rp2350-arm-s)
+# RP2350-E10: A2 bootrom writes this 256-byte block. picotool's default
+# 0x10FFFF00 wraps onto metadata copy 1 on 2 MiB flash, so put it in the boot
+# region's last sector instead, which the linker keeps out of the image.
+set_target_properties(bootloader_rp2350 PROPERTIES PICOTOOL_EXTRA_UF2_ARGS "--abs-block;0x10007F00")
 pico_add_extra_outputs(bootloader_rp2350)
 
 option(AFFINE_RP2350_BUILD_TEST_APP "Build the offset jump/re-entry test app" ON)

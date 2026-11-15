@@ -35,7 +35,7 @@ def elf_symbols(path):
     return symbols, loads
 
 
-def check(stem, base, end):
+def check(stem, base, end, abs_block):
     symbols, loads = elf_symbols(stem.with_suffix(".elf"))
     binary = stem.with_suffix(".bin").read_bytes()
     require(symbols["__vectors"] == base, f"{stem}: vectors not at image base")
@@ -67,7 +67,7 @@ def check(stem, base, end):
         require(length == 256, "unexpected UF2 payload")
         if index == 0:
             require((flags, address, number, total, family) ==
-                    (0xA000, 0x10FFFF00, 0, 2, 0xE48BFF57), "incorrect E10 absolute block")
+                    (0xA000, abs_block, 0, 2, 0xE48BFF57), "incorrect E10 absolute block")
             require(block[32:288] == bytes([0xEF]) * 256 and
                     struct.unpack_from("<I", block, 288)[0] == 0x9957E304,
                     "missing RP2_IGNORE_BLOCK extension")
@@ -92,8 +92,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("build_dir", type=pathlib.Path)
     args = parser.parse_args()
-    check(args.build_dir / "bootloader_rp2350", 0x10000000, 0x10008000)
-    check(args.build_dir / "test_app/rp2350_test_app", 0x10008000, 0x101FE000)
+    # The bootloader keeps its last sector free for its relocated E10 block.
+    check(args.build_dir / "bootloader_rp2350", 0x10000000, 0x10007000, 0x10007F00)
+    check(args.build_dir / "test_app/rp2350_test_app", 0x10008000, 0x101FE000, 0x10FFFF00)
 
 
 if __name__ == "__main__":
