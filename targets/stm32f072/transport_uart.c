@@ -7,7 +7,7 @@
  * until the last byte is out: the protocol answers one request at a time, and
  * reception keeps running in the interrupt meanwhile. The UART has no flow
  * control and loses bytes on overrun or noise; the frame decoder resyncs and
- * the host retries (docs/uart-transport.md).
+ * the host retries.
  */
 #include "boot_platform.h"
 

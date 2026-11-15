@@ -85,7 +85,7 @@ option(AFFINE_BOOT_F072_ROM_LOADER_ESCAPE "monica_lite_r1: let the application a
 # How the host reaches the bootloader: usb (USB CDC), uart (a USART, for boards
 # without USB and MCUs behind a master), or dual (both: the first valid frame
 # picks one until the next reset). uart and dual are STM32F072 only so far, pins
-# in targets/stm32f072/board_pins.h. See docs/uart-transport.md.
+# in targets/stm32f072/board_pins.h.
 set(AFFINE_BOOT_TRANSPORT "usb" CACHE STRING "Bootloader transport: usb, uart or dual")
 set_property(CACHE AFFINE_BOOT_TRANSPORT PROPERTY STRINGS usb uart dual)
 if(NOT AFFINE_BOOT_TRANSPORT MATCHES "^(usb|uart|dual)$")
