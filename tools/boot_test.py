@@ -91,6 +91,14 @@ DEFAULT_G431_BOOTLOADER_PID = 0x52B0
 DEFAULT_APP_PIDS = (0x52A5, 0x52A6)  # Mai controller role 1P / 2P
 
 TARGET_DEFAULTS = {
+    0x41343035: {
+        "name": "at32f405/reference",
+        # Proposed reference-board ID and USB PID; confirm before release.
+        "board_id": 0x41343052,
+        "flash_layout_id": 0x41343041,
+        "bootloader_pid": 0x52B3,
+        "write_align": 4,
+    },
     0x46303732: {
         "name": "stm32f072/monica_nfc",
         "board_id": 0x4D4F4E43,
