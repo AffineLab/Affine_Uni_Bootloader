@@ -67,6 +67,7 @@ BOOT_MANIFEST_SIZE = 364
 BOOT_MANIFEST_NONCE_OFFSET = 72
 BOOT_DATA_PREFIX_SIZE = 8
 BOOT_DEFAULT_WRITE_ALIGN = 8
+BOOT_DEFAULT_BEGIN_TIMEOUT = 6.0
 BOOT_FLAG_VERIFY_SIGNATURE = 1 << 0
 BOOT_FLAG_ENCRYPTED_IMAGE = 1 << 1
 BOOT_FLAG_ANTI_ROLLBACK = 1 << 2
@@ -98,6 +99,8 @@ TARGET_DEFAULTS = {
         "flash_layout_id": 0x52323341,
         "bootloader_pid": 0x52B4,
         "write_align": 4,
+        # BEGIN erases up to 500 sectors: 6.6 s measured on a Pico 2.
+        "begin_timeout": 12.0,
     },
     0x41343035: {
         "name": "at32f405/reference",
@@ -1139,6 +1142,10 @@ def target_default_write_align(target_id: int) -> int:
     return TARGET_DEFAULTS.get(target_id, {}).get("write_align", BOOT_DEFAULT_WRITE_ALIGN)
 
 
+def target_default_begin_timeout(target_id: int) -> float:
+    return float(TARGET_DEFAULTS.get(target_id, {}).get("begin_timeout", BOOT_DEFAULT_BEGIN_TIMEOUT))
+
+
 def target_default_board_id(target_id: int) -> int | None:
     value = TARGET_DEFAULTS.get(target_id, {}).get("board_id")
     return int(value) if value is not None else None
@@ -1285,6 +1292,8 @@ def flash_image(
 
     if write_align == 0:
         write_align = info_write_size or target_default_write_align(target_id)
+    if begin_timeout <= 0:
+        begin_timeout = target_default_begin_timeout(target_id)
     image, original_size = load_image_bytes(image_path, pad_byte, write_align)
     if manifest_key is not None:
         flags |= BOOT_FLAG_VERIFY_SIGNATURE
@@ -1705,7 +1714,7 @@ def main() -> int:
     )
     parser.add_argument("--pad-byte", type=lambda value: int(value, 0), default=0xFF, help="padding byte for flash alignment")
     parser.add_argument("--write-align", type=lambda value: int(value, 0), default=0, help="override flash write alignment; 0 auto-detects known targets")
-    parser.add_argument("--begin-timeout", type=float, default=6.0, help="response timeout for BEGIN in seconds")
+    parser.add_argument("--begin-timeout", type=float, default=0.0, help="response timeout for BEGIN in seconds; 0 uses the target's default (6 s, RP2350 12 s)")
     parser.add_argument("--commit-timeout", type=float, default=3.0, help="response timeout for COMMIT in seconds")
     parser.add_argument(
         "--encrypted-out",
