@@ -228,6 +228,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--build-dir", type=pathlib.Path, default=REPO / "build-host-tests")
     parser.add_argument("--cc", default=os.environ.get("CC") or ("gcc" if shutil.which("gcc") else "cc"))
+    parser.add_argument("--at32-sdk-dir", type=pathlib.Path,
+                        help="Also test the AT32 CDC adapter with the external SDK headers (no SDK code runs)")
     args = parser.parse_args()
 
     out = args.build_dir.resolve()
@@ -247,6 +249,23 @@ def main() -> int:
 
     uart_tests(bins["uart_sim"], fx, logs)
     dual_tests(bins["dual_sim"], fx, logs)
+
+    if args.at32_sdk_dir:
+        sdk = args.at32_sdk_dir.resolve()
+        includes = ["libraries/cmsis/cm4/device_support", "libraries/cmsis/cm4/core_support",
+                    "libraries/drivers/inc", "middlewares/usb_drivers/inc", "middlewares/usbd_class/cdc"]
+        command = [args.cc, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+                   "-DAT32F405CCT7", "-DAFFINE_AT32_USB_HS=0", f"-I{REPO}", f"-I{REPO / 'include'}",
+                   f"-I{REPO / 'targets/at32f405'}"]
+        for directory in includes:
+            command += ["-isystem", str(sdk / directory)]
+        at32_test = out / ("at32_usb_test.exe" if os.name == "nt" else "at32_usb_test")
+        must([*command, HERE / "at32_usb_test.c", REPO / "targets/at32f405/usb.c",
+              REPO / "targets/at32f405/usbd_desc.c", REPO / "targets/common/boot_target_common.c",
+              "-o", at32_test])
+        r = run([at32_test])
+        (logs / "at32_usb_test.log").write_text(r.stdout + r.stderr)
+        check("AT32 CDC adapter (host USB fakes, SDK headers only)", r.returncode == 0 and "ALL PASS" in r.stdout)
 
     failed = [name for name, ok in results if not ok]
     print(f"{len(results) - len(failed)}/{len(results)} passed; logs in {logs}")

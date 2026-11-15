@@ -31,7 +31,13 @@ jobs:
             python3 \
             python3-serial
 
+      - name: Fetch external Artery SDK (v2.1.5, pinned SHA)
+        # 5dd9d55a2ce9ffa8fe0cb2652ac142920f2094a3; shallow fetch into the build directory.
+        run: bash tools/fetch_at32_sdk.sh build-ci/at32-sdk
+
       - name: Run CI checks
+        env:
+          AFFINE_AT32_SDK_DIR: ${{ github.workspace }}/build-ci/at32-sdk
         run: bash tools/ci.sh
 
       - name: Upload bootloader binaries
@@ -44,6 +50,10 @@ jobs:
             build-ci/stm32g431/bootloader_stm32g431.bin
             build-ci/stm32f072/bootloader_stm32f072.bin
             build-ci/stm32h503/bootloader_stm32h503.bin
+            build-ci/at32f405-otgfs1/bootloader_at32f405.bin
+            build-ci/at32f405-otghs/bootloader_at32f405.bin
+            THIRD_PARTY_NOTICES.md
+            LICENSE
 
       - name: Upload debug artifacts
         uses: actions/upload-artifact@v6
@@ -58,3 +68,9 @@ jobs:
             build-ci/stm32f072/bootloader_stm32f072.map
             build-ci/stm32h503/bootloader_stm32h503.elf
             build-ci/stm32h503/bootloader_stm32h503.map
+            build-ci/at32f405-otgfs1/bootloader_at32f405.elf
+            build-ci/at32f405-otgfs1/bootloader_at32f405.map
+            build-ci/at32f405-otghs/bootloader_at32f405.elf
+            build-ci/at32f405-otghs/bootloader_at32f405.map
+            THIRD_PARTY_NOTICES.md
+            LICENSE

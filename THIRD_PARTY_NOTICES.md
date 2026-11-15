@@ -36,9 +36,15 @@ STM32CubeH5 package license metadata: `third_party/stm32cube_h5/LICENSE.md`
 
 SLA0044 notice URL used by the vendored USB middleware headers: https://www.st.com/SLA0044
 
+## External Artery dependency (not vendored)
+
+The AT32F405 build uses [ArteryTek/AT32F402_405_Firmware_Library](https://github.com/ArteryTek/AT32F402_405_Firmware_Library), v2.1.5 at `5dd9d55a2ce9ffa8fe0cb2652ac142920f2094a3`, selected with `AFFINE_AT32_SDK_DIR`. No Artery SDK files are distributed in this source repository. CI fetches the dependency into its build directory.
+
+The SDK's top-level `LICENSE` identifies BSD 3-Clause (Copyright (c) 2022, Artery-MCU). Its source headers carry a separate BSP notice (Copyright (c) 2025, Artery Technology), authorizing use, copying and distribution for design and development in conjunction with Artery microcontrollers, with an as-is warranty disclaimer. Those terms remain applicable to the external SDK and binaries incorporating it; the SDK is not relicensed as Apache-2.0. Retain the SDK license and notices when redistributing such binaries. The BSD conditions and disclaimer are reproduced below; consult the pinned SDK's source headers for the BSP notice.
+
 ## BSD 3-Clause License Text
 
-Some vendored STMicroelectronics HAL/LL files identify the applicable license through the STM32Cube package license metadata as BSD 3-Clause. The BSD 3-Clause license text is reproduced below for those components.
+The BSD 3-Clause conditions and disclaimer below apply to components identified above under that license; their respective copyright notices remain applicable.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
 

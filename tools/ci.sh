@@ -82,8 +82,20 @@ PY
         --manifest-out "${smoke_dir}/signed-encrypted-anti-rollback.manifest"
 }
 
-rm -rf "${BUILD_ROOT}"
+# Start from an empty BUILD_ROOT, except for the SDK the workflow fetched there.
 mkdir -p "${BUILD_ROOT}"
+find "${BUILD_ROOT}" -mindepth 1 -maxdepth 1 ! -name at32-sdk -exec rm -rf {} +
+AT32_SDK_COMMIT=5dd9d55a2ce9ffa8fe0cb2652ac142920f2094a3
+if [ -z "${AFFINE_AT32_SDK_DIR:-}" ]; then
+    AFFINE_AT32_SDK_DIR="${BUILD_ROOT}/at32-sdk"
+    bash tools/fetch_at32_sdk.sh "${AFFINE_AT32_SDK_DIR}"
+fi
+# A supplied SDK is read, never fetched into or modified. CMake checks its
+# version macros; a Git checkout must also be at the pinned commit.
+if [ -e "${AFFINE_AT32_SDK_DIR}/.git" ]; then
+    test "$(git -C "${AFFINE_AT32_SDK_DIR}" rev-parse HEAD)" = "${AT32_SDK_COMMIT}"
+fi
+AFFINE_AT32_SDK_DIR="$(cd "${AFFINE_AT32_SDK_DIR}" && pwd)"
 
 python3 -m py_compile tools/boot_test.py
 # The UART options parse (a dry run opens no port).
@@ -131,5 +143,14 @@ check_size STM32F072-DUAL "${BUILD_ROOT}/stm32f072-dual/bootloader_stm32f072.bin
 check_size STM32G431 "${BUILD_ROOT}/stm32g431/bootloader_stm32g431.bin"
 check_size STM32H503 "${BUILD_ROOT}/stm32h503/bootloader_stm32h503.bin"
 
-# The core and the STM32F072 dual-transport code built for the host.
-python3 tests/host/run.py --build-dir "${BUILD_ROOT}/host"
+for usb in otgfs1 otghs; do
+    cmake -S . -B "${BUILD_ROOT}/at32f405-${usb}" -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake \
+        -DAFFINE_BUILD_AT32F405=ON "-DAFFINE_BOOT_AT32_USB=${usb}" \
+        "-DAFFINE_AT32_SDK_DIR=${AFFINE_AT32_SDK_DIR}"
+    ninja -C "${BUILD_ROOT}/at32f405-${usb}" bootloader_at32f405
+    check_size "AT32F405-${usb}" "${BUILD_ROOT}/at32f405-${usb}/bootloader_at32f405.bin"
+done
+
+# The core, STM32F072 dual transport and AT32 CDC adapter built for the host.
+python3 tests/host/run.py --build-dir "${BUILD_ROOT}/host" --at32-sdk-dir "${AFFINE_AT32_SDK_DIR}"

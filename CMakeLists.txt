@@ -75,6 +75,10 @@ target_include_directories(bootloader_stub
 
 target_link_libraries(bootloader_stub PRIVATE boot_core)
 
+option(AFFINE_BUILD_AT32F405 "Build AT32F405 xC bootloader target" OFF)
+set(AFFINE_BOOT_AT32_USB "otgfs1" CACHE STRING "AT32F405 USB port: otgfs1 or otghs")
+set_property(CACHE AFFINE_BOOT_AT32_USB PROPERTY STRINGS otgfs1 otghs)
+
 option(AFFINE_BUILD_STM32G431 "Build STM32G431 bootloader target" OFF)
 option(AFFINE_BUILD_STM32H503 "Build STM32H503 bootloader target" OFF)
 option(AFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT "Use the protected 40 KiB Keychip application slot" OFF)
@@ -91,7 +95,7 @@ set_property(CACHE AFFINE_BOOT_TRANSPORT PROPERTY STRINGS usb uart dual)
 if(NOT AFFINE_BOOT_TRANSPORT MATCHES "^(usb|uart|dual)$")
     message(FATAL_ERROR "Unknown AFFINE_BOOT_TRANSPORT: ${AFFINE_BOOT_TRANSPORT} (usb, uart or dual)")
 endif()
-if(NOT AFFINE_BOOT_TRANSPORT STREQUAL "usb" AND (AFFINE_BUILD_STM32G431 OR AFFINE_BUILD_STM32H503))
+if(NOT AFFINE_BOOT_TRANSPORT STREQUAL "usb" AND (AFFINE_BUILD_STM32G431 OR AFFINE_BUILD_STM32H503 OR AFFINE_BUILD_AT32F405))
     message(FATAL_ERROR "AFFINE_BOOT_TRANSPORT=${AFFINE_BOOT_TRANSPORT} is only implemented for STM32F072 so far")
 endif()
 
@@ -600,4 +604,57 @@ if(AFFINE_BUILD_STM32H503)
         )
     endif()
 
+endif()
+
+if(AFFINE_BUILD_AT32F405)
+    if(NOT AFFINE_BOOT_AT32_USB MATCHES "^(otgfs1|otghs)$")
+        message(FATAL_ERROR "Unknown AFFINE_BOOT_AT32_USB: ${AFFINE_BOOT_AT32_USB} (otgfs1 or otghs)")
+    endif()
+    include(cmake/at32-sdk.cmake)
+    set(AT32_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/at32f405")
+    set(AT32_TARGET_SOURCES
+        ${AT32_TARGET_DIR}/main.c
+        ${AT32_TARGET_DIR}/usb.c
+        ${AT32_TARGET_DIR}/usb_hw.c
+        ${AT32_TARGET_DIR}/usbd_desc.c
+        ${AT32_TARGET_DIR}/boot_platform_at32f405.c
+    )
+    add_executable(bootloader_at32f405
+        src/boot_protocol.c src/boot_crypto.c src/boot_image.c
+        src/boot_security.c src/bootloader.c
+        ${BOOT_TARGET_COMMON_SOURCES}
+        ${AT32_TARGET_SOURCES}
+        ${AT32_SDK_SOURCES}
+    )
+    target_include_directories(bootloader_at32f405 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include ${AT32_TARGET_DIR})
+    target_include_directories(bootloader_at32f405 SYSTEM PRIVATE ${AT32_SDK_INCLUDES})
+    target_compile_definitions(bootloader_at32f405 PRIVATE AT32F405CCT7)
+    if(AFFINE_BOOT_AT32_USB STREQUAL "otghs")
+        target_compile_definitions(bootloader_at32f405 PRIVATE AFFINE_AT32_USB_HS=1)
+    else()
+        target_compile_definitions(bootloader_at32f405 PRIVATE AFFINE_AT32_USB_HS=0)
+    endif()
+    affine_apply_boot_policy(bootloader_at32f405)
+    target_compile_options(bootloader_at32f405 PRIVATE
+        -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+        -Os -flto -ffunction-sections -fdata-sections -fomit-frame-pointer
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -Wall -Wextra)
+    # SDK callbacks intentionally leave arguments unused. Do not hide warnings
+    # in Affine's target or core sources.
+    set_source_files_properties(${AT32_SDK_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter")
+    set_source_files_properties(${AT32_TARGET_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "-Werror")
+    target_link_options(bootloader_at32f405 PRIVATE
+        -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -flto
+        -nostartfiles --specs=nano.specs --specs=nosys.specs
+        -T${AT32_TARGET_DIR}/AT32F405xC_BOOTLOADER.ld -Wl,--gc-sections
+        -Wl,-Map=${CMAKE_BINARY_DIR}/bootloader_at32f405.map)
+    if(CMAKE_OBJCOPY)
+        add_custom_command(TARGET bootloader_at32f405 POST_BUILD
+            COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:bootloader_at32f405>
+                ${CMAKE_BINARY_DIR}/bootloader_at32f405.bin
+            BYPRODUCTS ${CMAKE_BINARY_DIR}/bootloader_at32f405.bin)
+    endif()
 endif()
