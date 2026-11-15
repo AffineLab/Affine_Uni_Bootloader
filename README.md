@@ -1,276 +1,78 @@
-# Affine Unified USB-CDC Bootloader
+# Affine Uni Bootloader
 
-A target-portable STM32 USB-CDC bootloader with a framed firmware update protocol, metadata-based image validation, and host-side flashing tools.
+A 24 KiB STM32 bootloader for Affine boards. It takes firmware over USB CDC (or a USART on STM32F072), checks it with CRC32 and, when required, an RSA-2048 signature, and starts a standard application image with no header in front of it. The core (`src/`, `include/`) is shared; each target in `targets/` supplies flash, transport, clock and jump code.
 
-## Overview
+## Targets
 
-Affine Unified USB-CDC Bootloader separates the reusable bootloader core from MCU-specific platform code. The shared core owns protocol framing, CRC validation, download session state, image metadata, and application handoff. Each target supplies flash operations, USB CDC transport glue, memory layout, and reset/jump behavior.
-
-The project is intended for STM32-based devices that need a compact firmware update path over USB CDC without forcing a private header into the application image.
-
-## Current Targets
-
-| Target | Status |
-| --- | --- |
-| `STM32F072` | Platform layer, USB CDC transport, linker scripts, and CMake target are present. |
-| `STM32G431` | Platform layer, USB CDC transport, linker scripts, and CMake target are present. |
-| `STM32H503` | Platform layer, USB CDC transport, linker scripts, and CMake target are present. |
-| `STM32F401` | Memory layout template only. |
-| `stub` | Minimal host/stub platform for core bring-up. |
-
-## Device Identity
-
-USB product strings are intentionally shared as `Affine Uni Bootloader`. Board and layout compatibility is reported by protocol instead of product text. `GET_DEVICE_INFO` returns the MCU target ID, board ID, board revision, flash layout ID, memory layout, write alignment, and security capabilities.
-Firmware-side IDs are defined in [include/boot_target_ids.h](include/boot_target_ids.h).
-
-| Target | Board | USB PID | `target_id` | `board_id` | `flash_layout_id` |
+| Target | Board | Bootloader PID | Application slot | Metadata | Transport |
 | --- | --- | --- | --- | --- | --- |
-| `STM32F072` | `Monica` | `0x52B2` | `0x46303732` | `0x4D4F4E43` | `0x46303741` |
-| `STM32G431` | `Curva` | `0x52B0` | `0x47343331` | `0x4D414931` | `0x47343341` |
-| `STM32H503` | `Linnea` | `0x52B1` | `0x48353033` | `0x4C504835` | `0x48353041` |
+| STM32F072 | Monica, Monica Lite R1 | `0x52B2` | `0x08006000`-`0x0801F7FF` (102 KiB) | `0x0801F800`- | USB, UART, or both |
+| STM32G431 | Mai / Curva | `0x52B0` | `0x08006000`-`0x0801CFFF` (92 KiB) | `0x0801E000`- | USB |
+| STM32H503 | Linnea | `0x52B1` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`- | USB |
 
-## Repository Layout
+The bootloader occupies `0x08000000`-`0x08005FFF` on all three; USB VID is `0xAFF1`. Target, board and layout IDs are in [include/boot_target_ids.h](include/boot_target_ids.h). `targets/stm32f401` is a memory layout template and `targets/stub` a minimal platform for bring-up.
 
-```text
-include/                  Public bootloader interfaces
-src/                      Shared protocol, image, security, and state-machine code
-targets/                  MCU-specific platform implementations and linker scripts
-targets/common/           Shared target-side helpers for flash range checks and USB transport
-third_party/              Vendored STM32Cube HAL/CMSIS/startup and ST USB middleware subsets
-cmake/toolchains/         Cross-compilation toolchain files
-tools/boot_test.py        Host-side smoke test and flashing utility (USB CDC or UART)
-```
-
-## Protocol Summary
-
-The transport is a USB CDC byte stream. The bootloader protocol adds its own fixed header, payload length, sequence number, payload CRC32, and header CRC32.
-
-Main commands:
-
-- `HELLO`: query protocol version, target ID, application base address, slot size, and maximum chunk size.
-- `GET_DEVICE_INFO`: query formal target, board, flash layout, memory geometry, write alignment, and capability fields.
-- `BEGIN`: start a firmware download session for a specific target, board, and flash layout. An unsigned session erases the application pages covered by the image here; a signed one erases nothing yet.
-- `DATA`: write one aligned firmware chunk at the next expected offset.
-- `COMMIT`: verify the received image, read back flash CRC, and write committed metadata.
-- `ABORT`: cancel the active session.
-- `GET_STATUS`: query current state, error code, written size, rolling CRC, current operation, and operation progress.
-- `GET_DIAG`: query transport and frame decoder diagnostics.
-- `GET_METADATA`: query the selected valid metadata copy without running a full image CRC.
-- `CLEAR_METADATA`: erase application metadata copies and leave the device in bootloader mode. Persistent security state is preserved by default.
-- `SET_MANIFEST`: provide a signed firmware manifest after `BEGIN` and before `DATA`. Only once its signature checks out are the application pages erased, so a host without a valid signature cannot wipe the application. Resending the same manifest (a lost answer) is accepted without erasing again.
-- `VERIFY_IMAGE`: validate selected metadata, vector table, full image CRC, and security policy.
-- `REBOOT`: acknowledge the command and reset the MCU.
-- `BOOT_APP`: acknowledge the command, then jump to the committed application if it validates.
-
-## Image Layout
-
-Applications remain standard bare-metal images:
-
-- `APP_BASE + 0x00` is the initial stack pointer.
-- `APP_BASE + 0x04` is the reset handler.
-- No private bootloader header is inserted before the vector table.
-
-The bootloader stores CRC-protected image metadata in a separate flash region near the end of the application slot. Targets with enough reserved metadata space keep two erase-unit metadata copies and use a valid copy on boot. On boot, the bootloader validates metadata, vector table addresses, and image CRC before jumping to the application.
-
-The metadata record carries a `format_version` (`BOOT_METADATA_FORMAT_VERSION`); records from older layouts are ignored, so after a bootloader upgrade the device stays in the bootloader until the application is flashed again. The security state sits at a fixed offset (`0x200`) in each metadata erase unit, independent of the record layout; it is still found where older bootloaders kept it and moves to the fixed offset on the next write.
-
-On STM32G431 and STM32H503 a read of flash whose programming was cut short by a power loss raises a flash ECC double error (NMI). The NMI handler clears and counts it, and every metadata, security-state and image read checks that count: the copy is skipped or the image fails verification, and the device stays in the bootloader instead of hanging in the NMI.
-
-The application's bootloader request word is read and cleared once, at the very start of the bootloader, before the auto-boot window. A host that talks to the bootloader inside that window and then sends `BOOT_APP` no longer leaves the request behind for the application's next reset.
-
-STM32F072 is a Cortex-M0 target and has no VTOR register. Its bootloader copies the application vector table to the first `0xC0` bytes of SRAM and remaps SRAM at address zero before jumping, so STM32F072 applications must reserve `0x20000000`-`0x200000BF`. The provided `targets/stm32f072/STM32F072CBTX_APP.ld` starts application RAM at `0x200000C0`.
-
-### STM32G431 boot guard and bootloader updater
-
-The STM32G431 bootloader always starts with a boot guard (`targets/stm32g431/boot_guard_stm32g431.c`, the port of the STM32F072 guard): the first 2 KiB page holds the vector table, the guard record, the guard, the reset code and the NMI handler. At every start the guard checks a length and sum, stamped into the `.bin` after linking by `tools/patch_boot_guard.py --record-offset 0x1D8` (the build does this automatically), over the rest of the bootloader. If the rest is incomplete it starts the ST system DFU loader at `0x1FFF0000`. An unstamped image (a debugger flash of the `.elf`) boots without the check.
-
-`g431_bl_updater` (`targets/stm32g431_blupdater`) is an application that replaces the bootloader in the field. The build generates its embedded image from the stamped bootloader (`tools/embed_bl_image.py`; `-DAFFINE_G431_BL_UPDATER_IMAGE=<stamped .bin>` embeds another one), and both the generator and the updater refuse an image without a stamped guard. It writes the first page first, then the others, verifying each page. Power lost after the first page leaves a board that comes up in the ST DFU loader and can be written again. Power lost while the first page itself is being erased or written (some tens of ms) still needs BOOT0 or SWD: single-bank G431 flash leaves no way around that window.
-
-Supported targets reserve 24 KiB for the bootloader:
-
-| Target | Bootloader | Application slot | Metadata |
-| --- | --- | --- | --- |
-| `STM32F072` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801F7FF` (102 KiB) | `0x0801F800`-`0x0801FFFF` |
-| `STM32G431` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801CFFF` (92 KiB) | `0x0801E000`-`0x0801FFFF` |
-| `STM32H503` | `0x08000000`-`0x08005FFF` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`-`0x0801FFFF` |
-
-On STM32G431, `0x0801D000`-`0x0801DFFF` between the application slot and the metadata is the
-application's settings page (Mai_stm32): the bootloader never erases or writes it.
-
-For the H503 Keychip build, configure
-`-DAFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT=ON`. It advertises a distinct board and
-layout ID and hard-caps the application slot at
-`0x08006000`-`0x0800FFFF` (40 KiB), while leaving
-`0x08010000`-`0x0801BFFF` unavailable to update erase/write operations.
-Production Keychip builds should also set
-`-DAFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY=ON` and provide a reviewed generated
-key header through `-DAFFINE_BOOT_KEYS_HEADER=...`. That profile rejects
-unsigned updates and requires anti-rollback on signed images; configuration
-fails instead of silently using development keys when the key header is absent.
-
-## Security Model
-
-The bootloader supports both unsigned development updates and signed secure updates.
-
-Security flags:
-
-| Flag | Meaning |
-| --- | --- |
-| `BOOT_FLAG_VERIFY_SIGNATURE` | Require a signed manifest before accepting image data. |
-| `BOOT_FLAG_ENCRYPTED_IMAGE` | Treat incoming `DATA` chunks as AES-128 CTR ciphertext. This flag also requires a signed manifest. |
-| `BOOT_FLAG_ANTI_ROLLBACK` | Request rollback-floor enforcement for this signed update. |
-
-Signed manifest updates use `SET_MANIFEST` after `BEGIN` and before the first `DATA` frame. The manifest includes target ID, board ID, flash layout ID, image size, CRC32, firmware version, flags, key ID, SHA-256 of the plaintext image, AES-CTR nonce, and an RSA-2048 PKCS#1 v1.5/SHA-256 signature. The bootloader stores the signed manifest fields in metadata and verifies the signature, board/layout compatibility, and SHA-256 again before booting an application.
-
-Unsigned development updates and signed secure updates can coexist. The default build allows unsigned updates so development and factory recovery remain simple. Production builds can change this policy with compile-time macros in [include/boot_policy.h](include/boot_policy.h):
-
-| Macro | Default | Meaning |
-| --- | --- | --- |
-| `AFFINE_BOOT_ALLOW_UNSIGNED_UPDATES` | `1` | Allow `BEGIN` with no signature flag. |
-| `AFFINE_BOOT_REQUIRE_SIGNED_UPDATES` | `0` | Reject unsigned updates and unsigned committed apps. |
-| `AFFINE_BOOT_ALLOW_OPTIONAL_ANTI_ROLLBACK` | `1` | Allow a signed manifest to opt into rollback-floor updates with `BOOT_FLAG_ANTI_ROLLBACK`. |
-| `AFFINE_BOOT_REQUIRE_ANTI_ROLLBACK_FOR_SIGNED` | `0` | Treat every signed update as anti-rollback protected, even if the flag is omitted. |
-| `AFFINE_BOOT_PRESERVE_SECURITY_STATE_ON_CLEAR_METADATA` | `1` | Keep rollback-floor state when application metadata is cleared. |
-
-Anti-rollback uses a small CRC-protected persistent security state stored beside each metadata copy. When an anti-rollback-protected signed update commits, the bootloader stores `max(previous_floor, firmware_version)` as the rollback floor. Later protected updates and boot validation reject firmware versions below that floor. `CLEAR_METADATA` does not clear this state by default, so clearing app metadata cannot reset the rollback floor.
-
-This is still software-level rollback resistance. Production hardware should also use STM32 readout protection and, where available, option-byte or secure-storage policy for stronger rollback resistance.
-
-Encrypted stream updates decrypt each incoming chunk with AES-128 CTR before writing flash. The default AES key and RSA public key in [include/boot_keys.h](include/boot_keys.h) are development keys and must be replaced for production. Firmware confidentiality also requires MCU readout protection; otherwise an attacker can read the symmetric key from flash.
-
-ST provides full security reference packages such as X-CUBE-SBSFU and cryptographic libraries such as X-CUBE-CRYPTOLIB. This project keeps a compact self-contained implementation for the current 24 KiB bootloader budget, but production products should evaluate replacing the local crypto primitives with ST's maintained cryptographic library or a similarly reviewed backend.
+- **STM32G431**: `0x0801D000`-`0x0801DFFF` is the application's settings page (Mai_stm32) and is never erased. The first flash page holds a boot guard that starts the ST ROM DFU loader if the rest of the bootloader is incomplete; `g431_bl_updater` replaces the bootloader in the field from an application.
+- **STM32F072**: Cortex-M0 has no VTOR, so the bootloader copies the application vectors to SRAM and remaps it: applications must start their RAM at `0x200000C0`. Monica Lite R1 builds have the same boot guard.
+- **STM32H503**: `-DAFFINE_BOOT_STM32H503_KEYCHIP_LAYOUT=ON` limits the slot to 40 KiB (`0x08006000`-`0x0800FFFF`) for Keychip.
 
 ## Building
 
-This project uses CMake. The bootloader core and target glue live in this repository. Minimal STM32Cube HAL/CMSIS/startup and ST USB middleware subsets needed for the supported targets are vendored under `third_party/`.
+Needs CMake, Ninja and the Arm GNU toolchain (on `PATH`, or `-DAFFINE_ARM_NONE_EABI_TOOLCHAIN_ROOT=<dir>`). STM32Cube HAL and USB middleware subsets are vendored in `third_party/` ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 
-Vendored third-party source layout:
+```sh
+cmake -S . -B build-g431 -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake -DAFFINE_BUILD_STM32G431=ON
+ninja -C build-g431 bootloader_stm32g431 g431_bl_updater
+```
 
-| Path | Purpose |
+| Option | Values |
 | --- | --- |
-| `third_party/stm32cube_f0` | STM32F072 HAL/CMSIS/startup plus USB Device middleware files used by the F072 build. |
-| `third_party/stm32cube_g4` | STM32G431 HAL/CMSIS/startup plus USB Device middleware files used by the G431 build. |
-| `third_party/stm32cube_h5` | STM32H503 HAL/CMSIS/startup plus USB Device middleware files used by the H503 build. |
+| `AFFINE_BUILD_STM32F072`, `_STM32G431`, `_STM32H503` | the target to build (`bootloader_stm32<target>`) |
+| `AFFINE_BOOT_TRANSPORT` | `usb` (default); STM32F072 also `uart` (USART1 on PA9/PA10, 115200 8N1, see `targets/stm32f072/board_pins.h`) and `dual`, which listens on both and stays with the first channel that sends a valid frame header until reset |
+| `AFFINE_BOOT_F072_BOARD` | `monica` (default) or `monica_lite_r1` |
+| `AFFINE_BOOT_KEYS_HEADER` | key header from `tools/generate_boot_keys_header.py`; without it the development keys in `include/boot_keys.h` are used |
+| `AFFINE_BOOT_ALLOW_UNSIGNED_UPDATES` and the other policy switches | see [include/boot_policy.h](include/boot_policy.h) |
+| `AFFINE_BOOT_KEYCHIP_PRODUCTION_POLICY` | H503 Keychip: signed, anti-rollback updates only; requires `AFFINE_BOOT_KEYS_HEADER` |
+| `AFFINE_G431_BL_UPDATER_IMAGE` | a stamped bootloader `.bin` for `g431_bl_updater` to carry instead of this build's |
 
-The vendored files keep their original third-party copyright and license headers. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+`tools/release.sh` builds the release set into `dist/release/`.
 
-Toolchain discovery:
+## Flashing
 
-The Arm GNU toolchain is resolved from `PATH` by default. If it is not on `PATH`, point CMake at either the toolchain root or its `bin` directory.
+`tools/boot_test.py` needs Python 3 with pyserial, and openssl for signing.
 
-| Variable | Purpose |
-| --- | --- |
-| `AFFINE_ARM_NONE_EABI_TOOLCHAIN_ROOT` | Optional `arm-none-eabi` toolchain root or `bin` directory. `ARM_NONE_EABI_TOOLCHAIN_ROOT` can also be set in the environment. |
-
-Example STM32H503 build:
-
-```powershell
-cmake -S . -B build-stm32h503 `
-  -G Ninja `
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake `
-  -DAFFINE_BUILD_STM32H503=ON
-
-ninja -C build-stm32h503 bootloader_stm32h503
+```sh
+py tools/boot_test.py COM3 flash app.bin --app-jump --run --wait-app   # from a running Mai application
+py tools/boot_test.py COM10 flash app.bin --manifest-key key.pem --manifest-key-id 2 --run
+py tools/boot_test.py COM10 probe            # hello, device info, status, metadata
+py tools/boot_test.py COM7 flash app.bin --transport uart --wait-hello 10 --run
 ```
 
-Example STM32F072 build:
+Other commands: `hello`, `status`, `diag`, `metadata`, `verify-image`, `clear-metadata`, `reboot`, `app-jump`. `--dry-run` with `--manifest-out` writes a signed manifest without a board. The tool speaks bootloader protocol 1.6 and also flashes 1.5.
 
-```powershell
-cmake -S . -B build-stm32f072 `
-  -G Ninja `
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake `
-  -DAFFINE_BUILD_STM32F072=ON
+## Protocol
 
-ninja -C build-stm32f072 bootloader_stm32f072
-```
+Each request is a 20-byte header (`AFFB` magic, opcode, sequence, payload length, payload CRC32, header CRC32) and its payload; the answer has the opcode with `0x8000` set. Structures and opcodes are in [include/boot_protocol.h](include/boot_protocol.h). A host sends one request at a time and on a timeout resends the same frame with the same sequence. The bootloader resynchronises on the magic, drops a partial frame after 100 ms of silence, and answers a repeated `DATA` or `COMMIT` without running it again.
 
-STM32F072 over a USART instead of USB (`AFFINE_BOOT_TRANSPORT=uart`, USART1 on PA9/PA10 at 115200 8N1 by default, see `targets/stm32f072/board_pins.h` and `docs/uart-transport.md`):
+An update is `BEGIN`, then `SET_MANIFEST` for a signed image, `DATA` chunks in order, and `COMMIT`. An unsigned `BEGIN` erases the pages the image covers; a signed one erases nothing until the manifest's signature checks out.
 
-```powershell
-cmake -S . -B build-stm32f072-uart `
-  -G Ninja `
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake `
-  -DAFFINE_BUILD_STM32F072=ON `
-  -DAFFINE_BOOT_TRANSPORT=uart
+## Applications
 
-ninja -C build-stm32f072-uart bootloader_stm32f072
-```
+- Link the application at `0x08006000` with a normal vector table, and keep clear of the metadata (and on G431 the settings page).
+- To enter the bootloader, write `0x424F4F54` to `0x20007F00` (G431, H503) or `0x20003F00` (F072) and reset. Otherwise the bootloader waits 1 s for a host, then starts a valid application.
+- Committed metadata (two copies on G431 and H503, one on F072) holds the image size, CRC32, version and the signed manifest fields; it is checked again at every boot. After a bootloader upgrade the application has to be flashed again.
 
-With `-DAFFINE_BOOT_TRANSPORT=dual` the STM32F072 bootloader listens on USB CDC and the USART at once. The first channel to deliver a frame header with a valid CRC is used until the next reset; the other one is ignored. Check first that nothing else on the board is wired to the USART pins: the bootloader drives TX while it runs.
+## Security
 
-Example STM32G431 build:
+- Unsigned updates are allowed by default. Signed updates carry a manifest with an RSA-2048 PKCS#1 v1.5 signature over the target, board, layout, size, CRC, SHA-256 and versions; `key_id` selects the key.
+- `--encrypted` streams the image as AES-128-CTR ciphertext. `--anti-rollback` stores a rollback floor that later updates cannot go below; `clear-metadata` keeps it.
+- The keys in `include/boot_keys.h` are for development. Production builds need their own key header and MCU readout protection.
+- On G431 and H503 a flash read that hits an ECC error from an interrupted write is counted by the NMI handler and treated as invalid data, so the board stays in the bootloader.
 
-```powershell
-cmake -S . -B build-stm32g431 `
-  -G Ninja `
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake `
-  -DAFFINE_BUILD_STM32G431=ON
+## Tests
 
-ninja -C build-stm32g431 bootloader_stm32g431
-```
-
-## Host Tool
-
-`tools/boot_test.py` provides a small serial utility for smoke testing and firmware flashing.
-
-```powershell
-py tools\boot_test.py COM5 hello
-py tools\boot_test.py COM5 device-info
-py tools\boot_test.py COM5 status
-py tools\boot_test.py COM5 metadata
-py tools\boot_test.py COM5 verify-image
-py tools\boot_test.py COM5 probe
-py tools\boot_test.py COM5 flash firmware.bin --run
-py tools\boot_test.py COM5 flash firmware.bin --manifest-key release_rsa.pem
-py tools\boot_test.py COM5 flash firmware.bin --manifest-key release_rsa.pem --encrypted
-py tools\boot_test.py COM3 flash firmware.bin --app-jump --run --wait-app
-py tools\boot_test.py COM5 clear-metadata
-py tools\boot_test.py COM5 reboot
-```
-
-Over a UART (a board built with `AFFINE_BOOT_TRANSPORT=uart`, through a USB-UART adapter or a network serial bridge):
-
-```powershell
-py tools\boot_test.py COM7 probe --transport uart
-py tools\boot_test.py COM7 flash firmware.bin --transport uart --baud 115200 --run
-py tools\boot_test.py COM7 flash firmware.bin --transport uart --wait-hello 10
-py tools\boot_test.py socket://192.168.1.20:4000 probe --transport uart
-```
-
-`--transport uart` skips all USB re-enumeration waits (the port stays the same across resets), uses `--baud` as the line rate, adds the wire time to each response timeout, retries 5 times by default, and resyncs on stray bytes before an answer. `--wait-hello SECONDS` sends HELLO every 50 ms until the bootloader answers: start it, then reset a board that has no BOOT-REQUEST line, to catch the auto-boot window. See `docs/uart-transport.md`.
-
-Offline manifest generation for the G431 target:
-
-```powershell
-py tools\boot_test.py COM0 flash firmware.bin `
-  --dry-run `
-  --target-id 0x47343331 `
-  --board-id 0x4D414931 `
-  --flash-layout-id 0x47343341 `
-  --manifest-key release_rsa.pem `
-  --manifest-out firmware.manifest
-```
-
-When `--app-jump` is used, the tool can wait for the bootloader USB PID to re-enumerate and continue on the new COM port. When `--run --wait-app` is used, it can also wait for the application USB PID after `BOOT_APP`.
-The `reboot` command waits to see where the board ends up, the application or the bootloader, and reports it; use `--no-wait-bootloader` to only send the command.
-
-Install the Python serial dependency if needed:
-
-```powershell
-py -m pip install pyserial
-```
-
-## Integration Notes
-
-An application that runs behind this bootloader should:
-
-- move its flash origin to the target's `APP_BASE`
-- reserve the metadata flash region
-- keep a normal vector table at the start of the image
-- optionally provide a runtime request path that writes the target bootloader magic value and resets the MCU
-
-Targets may implement `boot_platform_watchdog_kick()` if a hardware watchdog remains active while the bootloader runs. The shared core calls this hook during polling, page erase progress, image CRC verification, and deferred reboot/application-jump waits. The STM32G431 and STM32H503 hooks refresh IWDG directly when the peripheral definition is present, which keeps an already-enabled independent watchdog alive without starting one on boards that do not use it.
+`bash tools/ci.sh` builds every target and variant, checks their size against the 24 KiB limit, and runs `tests/host/run.py`, which compiles the core and the STM32F072 dual-transport code for the PC and flashes them with `boot_test.py` over clean and lossy simulated links.
 
 ## License
 
-Affine-authored code is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE). Vendored third-party files retain their original licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Apache License 2.0 ([LICENSE](LICENSE)). Vendored third-party files keep their own licenses.

@@ -22,12 +22,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake \
+            gcc \
             gcc-arm-none-eabi \
             git \
             libnewlib-arm-none-eabi \
             ninja-build \
             openssl \
-            python3
+            python3 \
+            python3-serial
 
       - name: Run CI checks
         run: bash tools/ci.sh
