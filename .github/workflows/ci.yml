@@ -23,9 +23,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             cmake \
             gcc \
+            g++ \
             gcc-arm-none-eabi \
             git \
             libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib \
             ninja-build \
             openssl \
             python3 \
@@ -35,9 +37,16 @@ jobs:
         # 5dd9d55a2ce9ffa8fe0cb2652ac142920f2094a3; shallow fetch into the build directory.
         run: bash tools/fetch_at32_sdk.sh build-ci/at32-sdk
 
+      - name: Fetch pinned pico-sdk 2.3.1 and build pinned picotool 2.3.1
+        run: |
+          bash tools/fetch_pico_sdk.sh build-ci/pico-sdk
+          bash tools/fetch_picotool.sh build-ci/picotool build-ci/pico-sdk
+
       - name: Run CI checks
         env:
           AFFINE_AT32_SDK_DIR: ${{ github.workspace }}/build-ci/at32-sdk
+          PICO_SDK_PATH: ${{ github.workspace }}/build-ci/pico-sdk
+          picotool_DIR: ${{ github.workspace }}/build-ci/picotool/install/picotool
         run: bash tools/ci.sh
 
       - name: Upload bootloader binaries
@@ -52,6 +61,12 @@ jobs:
             build-ci/stm32h503/bootloader_stm32h503.bin
             build-ci/at32f405-otgfs1/bootloader_at32f405.bin
             build-ci/at32f405-otghs/bootloader_at32f405.bin
+            build-ci/rp2350-pico2/bootloader_rp2350.bin
+            build-ci/rp2350-pico2/bootloader_rp2350.uf2
+            build-ci/rp2350-rp2354/bootloader_rp2350.bin
+            build-ci/rp2350-rp2354/bootloader_rp2350.uf2
+            build-ci/rp2350-pico2/test_app/rp2350_test_app.bin
+            build-ci/rp2350-pico2/test_app/rp2350_test_app.uf2
             THIRD_PARTY_NOTICES.md
             LICENSE
 
@@ -72,5 +87,11 @@ jobs:
             build-ci/at32f405-otgfs1/bootloader_at32f405.map
             build-ci/at32f405-otghs/bootloader_at32f405.elf
             build-ci/at32f405-otghs/bootloader_at32f405.map
+            build-ci/rp2350-pico2/bootloader_rp2350.elf
+            build-ci/rp2350-pico2/bootloader_rp2350.elf.map
+            build-ci/rp2350-rp2354/bootloader_rp2350.elf
+            build-ci/rp2350-rp2354/bootloader_rp2350.elf.map
+            build-ci/rp2350-pico2/test_app/rp2350_test_app.elf
+            build-ci/rp2350-pico2/test_app/rp2350_test_app.elf.map
             THIRD_PARTY_NOTICES.md
             LICENSE

@@ -23,18 +23,20 @@ cmake_configure_build() {
 check_size() {
     local target_name="$1"
     local path="$2"
+    local limit="${3:-${BOOTLOADER_SIZE_LIMIT}}"
+    local warn="${4:-${BOOTLOADER_SIZE_WARN}}"
     local size
 
     size="$(stat -c '%s' "${path}")"
     echo "${target_name} size: ${size} bytes"
 
-    if [ "${size}" -gt "${BOOTLOADER_SIZE_LIMIT}" ]; then
-        echo "${target_name} exceeds ${BOOTLOADER_SIZE_LIMIT} byte bootloader limit" >&2
+    if [ "${size}" -gt "${limit}" ]; then
+        echo "${target_name} exceeds ${limit} byte bootloader limit" >&2
         return 1
     fi
 
-    if [ "${size}" -gt "${BOOTLOADER_SIZE_WARN}" ]; then
-        echo "${target_name} is above warning threshold ${BOOTLOADER_SIZE_WARN} bytes" >&2
+    if [ "${size}" -gt "${warn}" ]; then
+        echo "${target_name} is above warning threshold ${warn} bytes" >&2
     fi
 }
 
@@ -84,7 +86,7 @@ PY
 
 # Start from an empty BUILD_ROOT, except for the SDK the workflow fetched there.
 mkdir -p "${BUILD_ROOT}"
-find "${BUILD_ROOT}" -mindepth 1 -maxdepth 1 ! -name at32-sdk -exec rm -rf {} +
+find "${BUILD_ROOT}" -mindepth 1 -maxdepth 1 ! -name at32-sdk ! -name pico-sdk ! -name picotool -exec rm -rf {} +
 AT32_SDK_COMMIT=5dd9d55a2ce9ffa8fe0cb2652ac142920f2094a3
 if [ -z "${AFFINE_AT32_SDK_DIR:-}" ]; then
     AFFINE_AT32_SDK_DIR="${BUILD_ROOT}/at32-sdk"
@@ -96,6 +98,15 @@ if [ -e "${AFFINE_AT32_SDK_DIR}/.git" ]; then
     test "$(git -C "${AFFINE_AT32_SDK_DIR}" rev-parse HEAD)" = "${AT32_SDK_COMMIT}"
 fi
 AFFINE_AT32_SDK_DIR="$(cd "${AFFINE_AT32_SDK_DIR}" && pwd)"
+if [ -z "${PICO_SDK_PATH:-}" ]; then
+    PICO_SDK_PATH="${BUILD_ROOT}/pico-sdk"
+    bash tools/fetch_pico_sdk.sh "${PICO_SDK_PATH}"
+fi
+PICO_SDK_PATH="$(cd "${PICO_SDK_PATH}" && pwd)"
+if [ -z "${picotool_DIR:-}" ]; then
+    bash tools/fetch_picotool.sh "${BUILD_ROOT}/picotool" "${PICO_SDK_PATH}"
+    picotool_DIR="$(cd "${BUILD_ROOT}/picotool/install/picotool" && pwd)"
+fi
 
 python3 -m py_compile tools/boot_test.py
 # The UART options parse (a dry run opens no port).
@@ -152,5 +163,16 @@ for usb in otgfs1 otghs; do
     check_size "AT32F405-${usb}" "${BUILD_ROOT}/at32f405-${usb}/bootloader_at32f405.bin"
 done
 
-# The core, STM32F072 dual transport and AT32 CDC adapter built for the host.
-python3 tests/host/run.py --build-dir "${BUILD_ROOT}/host" --at32-sdk-dir "${AFFINE_AT32_SDK_DIR}"
+# 28 KiB: the last sector of the 32 KiB boot region holds the E10 UF2 block.
+for board in pico2 rp2354; do
+    cmake -S targets/rp2350 -B "${BUILD_ROOT}/rp2350-${board}" -G Ninja \
+        -DCMAKE_BUILD_TYPE=MinSizeRel "-DAFFINE_RP2350_BOARD=${board}" \
+        "-DPICO_SDK_PATH=${PICO_SDK_PATH}" "-Dpicotool_DIR=${picotool_DIR}"
+    cmake --build "${BUILD_ROOT}/rp2350-${board}"
+    check_size "RP2350-${board}" "${BUILD_ROOT}/rp2350-${board}/bootloader_rp2350.bin" 28672 27648
+    python3 tools/check_rp2350.py "${BUILD_ROOT}/rp2350-${board}"
+done
+
+# Core/dual transport plus AT32/RP2350 adapters; all hardware interfaces are faked.
+python3 tests/host/run.py --build-dir "${BUILD_ROOT}/host" \
+    --at32-sdk-dir "${AFFINE_AT32_SDK_DIR}" --pico-sdk-dir "${PICO_SDK_PATH}"

@@ -228,6 +228,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--build-dir", type=pathlib.Path, default=REPO / "build-host-tests")
     parser.add_argument("--cc", default=os.environ.get("CC") or ("gcc" if shutil.which("gcc") else "cc"))
+    parser.add_argument("--pico-sdk-dir", type=pathlib.Path,
+                        help="pico-sdk 2.3.1 directory for RP2350 CDC header/fake tests")
     parser.add_argument("--at32-sdk-dir", type=pathlib.Path,
                         help="Also test the AT32 CDC adapter with the external SDK headers (no SDK code runs)")
     args = parser.parse_args()
@@ -239,6 +241,27 @@ def main() -> int:
 
     make_fixtures(fx)
     bins = build(args.cc, out, fx)
+
+    # Actual flash adapter with a NOR model; no SDK or hardware is executed.
+    rp_common = [args.cc, "-std=gnu11", "-D_GNU_SOURCE", "-O1", "-Wall", "-Wextra", "-Werror",
+                 f"-I{REPO}", f"-I{REPO / 'include'}", f"-I{REPO / 'targets/rp2350'}",
+                 "-DAFFINE_RP2350_BOARD_ID=BOOT_BOARD_ID_R235_PICO2"]
+    rp_flash = out / ("rp2350_flash_test.exe" if os.name == "nt" else "rp2350_flash_test")
+    must([*rp_common, f"-I{HERE / 'rp2350_stub'}", HERE / "rp2350_flash_test.c",
+          REPO / "targets/rp2350/flash.c", REPO / "targets/common/boot_target_common.c", "-o", rp_flash])
+    r = run([rp_flash])
+    (logs / "rp2350_flash_test.log").write_text(r.stdout + r.stderr)
+    check("RP2350 flash adapter (host NOR/IRQ fakes)", r.returncode == 0 and "ALL PASS" in r.stdout)
+    if args.pico_sdk_dir:
+        rp_usb = out / ("rp2350_usb_test.exe" if os.name == "nt" else "rp2350_usb_test")
+        must([*rp_common, "-DCFG_TUSB_MCU=OPT_MCU_NONE", "-DTUP_DCD_ENDPOINT_MAX=16", "-isystem",
+              args.pico_sdk_dir.resolve() / "lib/tinyusb/src", HERE / "rp2350_usb_test.c",
+              REPO / "targets/rp2350/usb.c", REPO / "targets/rp2350/usb_descriptors.c",
+              REPO / "targets/common/boot_target_common.c", "-o", rp_usb])
+        r = run([rp_usb])
+        (logs / "rp2350_usb_test.log").write_text(r.stdout + r.stderr)
+        check("RP2350 CDC adapter (host USB fakes, TinyUSB headers only)",
+              r.returncode == 0 and "ALL PASS" in r.stdout)
 
     r = run([bins["core_test"], fx], timeout=600)
     (logs / "core_test.log").write_text(r.stdout + r.stderr)

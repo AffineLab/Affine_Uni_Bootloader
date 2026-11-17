@@ -67,6 +67,7 @@ BOOT_MANIFEST_SIZE = 364
 BOOT_MANIFEST_NONCE_OFFSET = 72
 BOOT_DATA_PREFIX_SIZE = 8
 BOOT_DEFAULT_WRITE_ALIGN = 8
+BOOT_DEFAULT_BEGIN_TIMEOUT = 6.0
 BOOT_FLAG_VERIFY_SIGNATURE = 1 << 0
 BOOT_FLAG_ENCRYPTED_IMAGE = 1 << 1
 BOOT_FLAG_ANTI_ROLLBACK = 1 << 2
@@ -91,6 +92,17 @@ DEFAULT_G431_BOOTLOADER_PID = 0x52B0
 DEFAULT_APP_PIDS = (0x52A5, 0x52A6)  # Mai controller role 1P / 2P
 
 TARGET_DEFAULTS = {
+    # Proposed RP2350 target, Pico 2 board, layout and USB identity. RP2354
+    # builds report board 0x52333534; real flashes use the device's IDs.
+    0x52323335: {
+        "name": "rp2350/pico2",
+        "board_id": 0x52323350,
+        "flash_layout_id": 0x52323341,
+        "bootloader_pid": 0x52B4,
+        "write_align": 4,
+        # BEGIN erases up to 500 sectors: 6.6 s measured on a Pico 2.
+        "begin_timeout": 12.0,
+    },
     0x41343035: {
         "name": "at32f405/reference",
         # Proposed reference-board ID and USB PID; confirm before release.
@@ -352,8 +364,8 @@ def read_frame(
     the pins come up): look for the frame magic byte by byte, and treat a
     header whose CRC does not check out as a false start one byte later. A
     frame with a damaged payload raises ValueError. deadline (time.monotonic())
-    bounds the whole search; without it only each read waits up to
-    port.timeout.
+    bounds the whole search, with port.timeout only how long one read blocks;
+    without it the first read that times out ends the search.
     """
     magic_bytes = struct.pack("<I", BOOT_FRAME_MAGIC)
     buf = bytearray()
@@ -365,7 +377,9 @@ def read_frame(
                 raise TimeoutError(f"timed out waiting for a frame, got {len(buf)} bytes")
             chunk = port.read(size - len(buf))
             if not chunk:
-                raise TimeoutError(f"timed out waiting for {size} bytes, got {len(buf)}")
+                if deadline is None:
+                    raise TimeoutError(f"timed out waiting for {size} bytes, got {len(buf)}")
+                continue
             buf.extend(chunk)
 
     while True:
@@ -962,20 +976,20 @@ def send_frame_and_read(
     tx_frame = build_frame(opcode, sequence, payload)
     expected_opcode = opcode | BOOT_OP_RESPONSE
     tag = label or f"opcode=0x{opcode:04X}"
-    previous_timeout = port.timeout
+    # The deadline bounds the wait; port.timeout is left alone. pyserial
+    # reconfigures the port on every assignment, which on Windows usbser is a
+    # few CDC control transfers: about 26 ms on a full-speed device, so setting
+    # and restoring it around each DATA frame cost 20x the transfer itself.
+    wait = (response_timeout if response_timeout is not None else (port.timeout or 1.0)) + response_allowance(
+        port, len(tx_frame)
+    )
 
     for attempt in range(1, retries + 1):
         if clear_input:
             port.reset_input_buffer()
 
-        wait = (response_timeout if response_timeout is not None else (previous_timeout or 1.0)) + response_allowance(
-            port, len(tx_frame)
-        )
         mismatch: str | None = None
         try:
-            # Before the write: setting the timeout is a USB control transfer on
-            # usbser, which fails while the frame has the bootloader erasing flash.
-            port.timeout = wait
             print(f"{tag} Tx[{attempt}/{retries}]: {format_hex(tx_frame)}")
             port.write(tx_frame)
             port.flush()
@@ -1005,8 +1019,6 @@ def send_frame_and_read(
             if isinstance(exc, ValueError):
                 raise TimeoutError(str(exc)) from exc
             raise
-        finally:
-            port.timeout = previous_timeout
 
     raise RuntimeError(f"{tag} exhausted retries")
 
@@ -1129,6 +1141,10 @@ def reconnect_after_exception(
 
 def target_default_write_align(target_id: int) -> int:
     return TARGET_DEFAULTS.get(target_id, {}).get("write_align", BOOT_DEFAULT_WRITE_ALIGN)
+
+
+def target_default_begin_timeout(target_id: int) -> float:
+    return float(TARGET_DEFAULTS.get(target_id, {}).get("begin_timeout", BOOT_DEFAULT_BEGIN_TIMEOUT))
 
 
 def target_default_board_id(target_id: int) -> int | None:
@@ -1277,6 +1293,8 @@ def flash_image(
 
     if write_align == 0:
         write_align = info_write_size or target_default_write_align(target_id)
+    if begin_timeout <= 0:
+        begin_timeout = target_default_begin_timeout(target_id)
     image, original_size = load_image_bytes(image_path, pad_byte, write_align)
     if manifest_key is not None:
         flags |= BOOT_FLAG_VERIFY_SIGNATURE
@@ -1570,10 +1588,8 @@ def send_command(
         port.write(tx_frame)
         port.flush()
 
-        previous_timeout = port.timeout
         try:
-            wait = (previous_timeout or 1.0) + response_allowance(port, len(tx_frame))
-            port.timeout = wait
+            wait = (port.timeout or 1.0) + response_allowance(port, len(tx_frame))
             # The deadline also ends a resync over a line that never goes
             # quiet, e.g. an application printing on the same USART.
             header, rx_payload, rx_frame = read_frame(port, time.monotonic() + wait)
@@ -1583,8 +1599,6 @@ def send_command(
                 time.sleep(retry_interval)
                 continue
             return 1
-        finally:
-            port.timeout = previous_timeout
 
         _, rx_opcode, rx_sequence, _, _, _ = header
         print(f"Rx[{attempt}/{retries}]: {format_hex(rx_frame)}")
@@ -1701,7 +1715,7 @@ def main() -> int:
     )
     parser.add_argument("--pad-byte", type=lambda value: int(value, 0), default=0xFF, help="padding byte for flash alignment")
     parser.add_argument("--write-align", type=lambda value: int(value, 0), default=0, help="override flash write alignment; 0 auto-detects known targets")
-    parser.add_argument("--begin-timeout", type=float, default=6.0, help="response timeout for BEGIN in seconds")
+    parser.add_argument("--begin-timeout", type=float, default=0.0, help="response timeout for BEGIN in seconds; 0 uses the target's default (6 s, RP2350 12 s)")
     parser.add_argument("--commit-timeout", type=float, default=3.0, help="response timeout for COMMIT in seconds")
     parser.add_argument(
         "--encrypted-out",
