@@ -65,6 +65,18 @@ Redistribution and use in source and binary forms, with or without modification,
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES, INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT, INCLUDING NEGLIGENCE OR OTHERWISE ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+## ESP-IDF and esp_tinyusb (external)
+
+The ESP32-S3 agent and test app build against ESP-IDF v6.1.1 (Apache-2.0;
+some bundled components carry their own licenses) and the managed component
+`espressif/esp_tinyusb` 3.0.1 (Apache-2.0), pinned in
+`targets/esp32s3/agent/dependencies.lock`. esp_tinyusb bundles TinyUSB (MIT,
+Copyright (c) 2012-2026 hathach). Neither is vendored here: the IDF install
+provides one, the component manager fetches the other at build time. Binaries
+also contain the IDF second-stage bootloader. When redistributing them, retain
+the ESP-IDF, esp_tinyusb and TinyUSB license texts and notices of the
+components actually linked. See `targets/esp32s3/PORTING.md`.
+
 ## WCH CH32V20x SDK (external)
 
 The CH32V203 port builds selected files from openwch/ch32v20x at

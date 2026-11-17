@@ -12,6 +12,7 @@ A USB CDC bootloader for Affine boards, with 24 KiB STM32/AT32/CH32 and 32 KiB R
 | CH32V203C8 | Reference (all IDs proposed) | `0x52B5` (proposed) | `0x08006000`-`0x0800DFFF` (32 KiB) | `0x0800E000`- (two 4 KiB copies) | USB USBD or USBFS |
 | STM32H503 | Linnea | `0x52B1` | `0x08006000`-`0x0801BFFF` (88 KiB) | `0x0801C000`- | USB |
 | RP2350 / RP2354 | Pico 2 or RP2354 (`AFFINE_RP2350_BOARD`, all IDs proposed) | `0x52B4` (proposed) | `0x10008000`-`0x101FDFFF` (2008 KiB) | `0x101FE000`- | USB FS |
+| ESP32-S3 | WeAct ESP32-S3-N16R8 (all IDs proposed) | `0x52B6` (proposed) | `ota_0` partition, flash `0x120000`-`0x51FFFF` (4 MiB) | `affmeta` partition, `0x110000`- (two 4 KiB copies) | USB OTG (TinyUSB CDC) |
 
 The bootloader occupies `0x08000000`-`0x08005FFF` on STM32/AT32/CH32 and `0x10000000`-`0x10007FFF` on RP2350; USB VID is `0xAFF1` (proposed for RP2350). Target, board and layout IDs are in [include/boot_target_ids.h](include/boot_target_ids.h). `targets/stm32f401` is a memory layout template and `targets/stub` a minimal platform for bring-up.
 
@@ -59,6 +60,8 @@ Use `usbfs` in a second directory for the other peripheral. It needs xPack riscv
 - Erased flash reads `0xE339`, not `0xFF`.
 - USBD is tested on a WeAct CH32V203C8T6 board; USBFS is untested.
 
+ESP32-S3 is not a bootloader port: the stock ESP-IDF second-stage bootloader stays, and the Uni core runs as the `factory` application (an OTA agent) that writes `ota_0` and selects it with `esp_ota_set_boot_partition`. The addresses it reports are its own cache mapping of the partitions, not flash offsets. Build it with ESP-IDF v6.1.1 (`idf.py -C targets/esp32s3/agent build`); see [ESP32-S3 port notes](targets/esp32s3/PORTING.md) for the partition map, the application contract (`affine_esp_enter_bootloader()`, `esp_ota_mark_app_valid_cancel_rollback()`), recovery and board results. It never enables secure boot, flash encryption or eFuse anti-rollback. It is not yet in `tools/release.sh`.
+
 RP2350 is a standalone secure Arm project: `cmake -S targets/rp2350 -B build-rp2350 -G Ninja -DCMAKE_BUILD_TYPE=MinSizeRel -DPICO_SDK_PATH=<sdk> `-Dpicotool_DIR=<installed-package>`, then `cmake --build build-rp2350`; add `-DAFFINE_RP2350_BOARD=rp2354` for RP2354. It includes an offset test app by default (`AFFINE_RP2350_BUILD_TEST_APP=OFF` disables it). See [RP2350 port notes](targets/rp2350/PORTING.md) for the pinned tools, app contract, watchdog request, E10 UF2 block and board results. This target is not yet in `tools/release.sh`.
 
 ## Flashing
@@ -85,6 +88,7 @@ An update is `BEGIN`, then `SET_MANIFEST` for a signed image, `DATA` chunks in o
 - Link STM32/AT32 applications at `0x08006000`, or RP2350 applications at `0x10008000`, with a normal vector table; keep clear of metadata (and on G431 the settings page).
 - To enter the bootloader, write `0x424F4F54` to `0x20007F00` (G431, H503), `0x20019700` (AT32F405), or `0x20003F00` (F072) and reset. Otherwise the bootloader waits 1 s for a host, then starts a valid application.
 - On RP2350 write the same magic to watchdog `scratch[0]`, then call `watchdog_reboot(0, 0, 0)`; the bootloader consumes it once. No SRAM retention is assumed.
+- On ESP32-S3 build a normal IDF application for `ota_0` with `targets/esp32s3/partitions.csv`, link the `affine_esp_boot` component and call `affine_esp_enter_bootloader()` (an RTC request plus selecting `factory`). Confirm each new image with `esp_ota_mark_app_valid_cancel_rollback()`, or IDF rolls back to the agent.
 - Committed metadata (two copies on G431, H503 and AT32F405, one on F072) holds the image size, CRC32, version and the signed manifest fields; it is checked again at every boot. After a bootloader upgrade the application has to be flashed again.
 
 ## Security
@@ -97,7 +101,7 @@ An update is `BEGIN`, then `SET_MANIFEST` for a signed image, `DATA` chunks in o
 
 ## Tests
 
-`bash tools/ci.sh` builds the supported targets and variants, checks the 24 KiB STM32/AT32/CH32 or 28 KiB RP2350 image limit (Pico 2 and RP2354 builds), and runs `tests/host/run.py`. Host tests cover core/dual-transport clean and lossy links, AT32/RP2350 CDC adapters against fakes and external SDK headers, RP2350 NOR page writes, and CH32 flash/layout/entry/jump cleanup and CDC packet buffering. `tools/check_rp2350.py <build-dir>` inspects both RP2350 ELF/BIN/UF2 artifacts without hardware.
+`bash tools/ci.sh` builds the supported targets and variants, checks the 24 KiB STM32/AT32/CH32 or 28 KiB RP2350 image limit (Pico 2 and RP2354 builds), and runs `tests/host/run.py`. Host tests cover core/dual-transport clean and lossy links, AT32/RP2350 CDC adapters against fakes and external SDK headers, RP2350 NOR page writes, and CH32 flash/layout/entry/jump cleanup and CDC packet buffering. `tools/check_rp2350.py <build-dir>` inspects both RP2350 ELF/BIN/UF2 artifacts without hardware. `bash tools/ci_esp32s3.sh` (in an ESP-IDF v6.1.1 shell or the `espressif/idf:v6.1.1` container) builds the ESP32-S3 agent, test app and their test variants and packages signed manifests for the test app.
 
 ## License
 
