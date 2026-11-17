@@ -92,6 +92,16 @@ DEFAULT_G431_BOOTLOADER_PID = 0x52B0
 DEFAULT_APP_PIDS = (0x52A5, 0x52A6)  # Mai controller role 1P / 2P
 
 TARGET_DEFAULTS = {
+    # Proposed ESP32-S3 WeAct N16R8 target, board, layout and USB identity.
+    0x45533353: {
+        "name": "esp32s3/weact-n16r8",
+        "board_id": 0x45533357,
+        "flash_layout_id": 0x45533341,
+        "bootloader_pid": 0x52B6,
+        "write_align": 4,
+        # BEGIN erases up to 1024 sectors: 28 s measured over a written 4 MiB slot.
+        "begin_timeout": 60.0,
+    },
     # Proposed CH32V203 C8 reference board, layout and USB identities.
     0x43323033: {
         "name": "ch32v203/reference",

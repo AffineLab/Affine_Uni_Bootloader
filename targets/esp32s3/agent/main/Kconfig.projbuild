@@ -1,0 +1,11 @@
+menu "Affine ESP32-S3 agent"
+config AFFINE_AGENT_LOG_CDC
+    bool "Mirror logs to a second CDC interface (test builds only)"
+    default n
+    depends on TINYUSB_CDC_COUNT >= 2
+    help
+        For boards whose USB-UART port cannot be connected together with the
+        native port. Interface 0 stays the Uni protocol channel; logs are
+        mirrored to CDC interface 1, and still go to UART0. Lines are dropped
+        while no host drains them. Build with sdkconfig.logcdc.
+endmenu

@@ -1,0 +1,5 @@
+menu "Affine ESP32-S3 test app"
+config AFFINE_TEST_CRASH
+    bool "Reset before confirming the app (rollback test)"
+    default n
+endmenu
