@@ -7,6 +7,9 @@
 #if defined(AFFINE_BOOT_CH32V203)
 #include "targets/ch32v203/app_entry.h"
 #endif
+#if defined(AFFINE_BOOT_ESP32S3)
+#include "esp_app_format.h"
+#endif
 
 /* Metadata sizes of the layouts that kept the security state right behind the
  * record (rounded up to the write unit), from board identity binding on. */
@@ -90,7 +93,7 @@ void boot_security_state_prepare(const boot_target_config_t *cfg,
     boot_security_state_update_crc(state);
 }
 
-#if !defined(AFFINE_BOOT_CH32V203)
+#if !defined(AFFINE_BOOT_CH32V203) && !defined(AFFINE_BOOT_ESP32S3)
 static bool boot_address_in_sram(const boot_target_config_t *cfg, uint32_t addr)
 {
     const uint32_t sram_end = cfg->sram_base + cfg->sram_size;
@@ -111,6 +114,13 @@ bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_ba
     uint32_t words[2];
     return boot_flash_read(app_base, words, sizeof(words)) &&
            boot_ch32_entry_prepare(cfg, app_base, words, NULL);
+#elif defined(AFFINE_BOOT_ESP32S3)
+    esp_image_header_t header;
+    return app_base == cfg->app_base && cfg->app_size >= sizeof(header) &&
+           boot_flash_read(app_base, &header, sizeof(header)) &&
+           header.magic == ESP_IMAGE_HEADER_MAGIC &&
+           header.chip_id == ESP_CHIP_ID_ESP32S3 &&
+           header.segment_count > 0 && header.segment_count <= ESP_IMAGE_MAX_SEGMENTS;
 #else
     uint32_t vt[2];
     uint32_t initial_sp;

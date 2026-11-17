@@ -9,6 +9,41 @@ on:
   workflow_dispatch:
 
 jobs:
+  esp32s3:
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v6.1.1
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Build ESP32-S3 agent and test app
+        shell: bash
+        run: bash tools/ci_esp32s3.sh
+      - name: Upload ESP32-S3 agent artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: esp32s3-agent
+          if-no-files-found: error
+          path: |
+            targets/esp32s3/agent/build/bootloader/bootloader.bin
+            targets/esp32s3/agent/build/partition_table/partition-table.bin
+            targets/esp32s3/agent/build/ota_data_initial.bin
+            targets/esp32s3/agent/build/affine_esp32s3_agent.bin
+            targets/esp32s3/agent/build/flasher_args.json
+      - name: Upload ESP32-S3 test app and debug artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: esp32s3-debug-and-test-app
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            targets/esp32s3/agent/build/affine_esp32s3_agent.elf
+            targets/esp32s3/agent/build/affine_esp32s3_agent.map
+            targets/esp32s3/test_app/build/affine_esp32s3_test_app.bin
+            targets/esp32s3/test_app/build/affine_esp32s3_test_app.elf
+            targets/esp32s3/test_app/build/affine_esp32s3_test_app.map
+            build-ci/esp32s3-manifest-smoke/*.manifest
+
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
