@@ -86,7 +86,7 @@ PY
 
 # Start from an empty BUILD_ROOT, except for the SDK the workflow fetched there.
 mkdir -p "${BUILD_ROOT}"
-find "${BUILD_ROOT}" -mindepth 1 -maxdepth 1 ! -name at32-sdk ! -name pico-sdk ! -name picotool -exec rm -rf {} +
+find "${BUILD_ROOT}" -mindepth 1 -maxdepth 1 ! -name at32-sdk ! -name ch32-sdk ! -name pico-sdk ! -name picotool -exec rm -rf {} +
 AT32_SDK_COMMIT=5dd9d55a2ce9ffa8fe0cb2652ac142920f2094a3
 if [ -z "${AFFINE_AT32_SDK_DIR:-}" ]; then
     AFFINE_AT32_SDK_DIR="${BUILD_ROOT}/at32-sdk"
@@ -107,6 +107,12 @@ if [ -z "${picotool_DIR:-}" ]; then
     bash tools/fetch_picotool.sh "${BUILD_ROOT}/picotool" "${PICO_SDK_PATH}"
     picotool_DIR="$(cd "${BUILD_ROOT}/picotool/install/picotool" && pwd)"
 fi
+
+if [ -z "${AFFINE_CH32_SDK_DIR:-}" ]; then
+    AFFINE_CH32_SDK_DIR="${BUILD_ROOT}/ch32-sdk"
+    bash tools/fetch_ch32_sdk.sh "${AFFINE_CH32_SDK_DIR}"
+fi
+AFFINE_CH32_SDK_DIR="$(cd "${AFFINE_CH32_SDK_DIR}" && pwd)"
 
 python3 -m py_compile tools/boot_test.py
 # The UART options parse (a dry run opens no port).
@@ -163,6 +169,16 @@ for usb in otgfs1 otghs; do
     check_size "AT32F405-${usb}" "${BUILD_ROOT}/at32f405-${usb}/bootloader_at32f405.bin"
 done
 
+for usb in usbd usbfs; do
+    cmake -S . -B "${BUILD_ROOT}/ch32v203-${usb}" -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/riscv-none-elf-gcc.cmake \
+        -DAFFINE_BUILD_CH32V203=ON "-DAFFINE_BOOT_CH32_USB=${usb}" \
+        "-DAFFINE_CH32_SDK_DIR=${AFFINE_CH32_SDK_DIR}"
+    ninja -C "${BUILD_ROOT}/ch32v203-${usb}" bootloader_ch32v203
+    check_size "CH32V203-${usb}" "${BUILD_ROOT}/ch32v203-${usb}/bootloader_ch32v203.bin" 24576 22528
+    python3 tools/check_ch32.py "${BUILD_ROOT}/ch32v203-${usb}"
+done
+
 # 28 KiB: the last sector of the 32 KiB boot region holds the E10 UF2 block.
 for board in pico2 rp2354; do
     cmake -S targets/rp2350 -B "${BUILD_ROOT}/rp2350-${board}" -G Ninja \
@@ -173,6 +189,6 @@ for board in pico2 rp2354; do
     python3 tools/check_rp2350.py "${BUILD_ROOT}/rp2350-${board}"
 done
 
-# Core/dual transport plus AT32/RP2350 adapters; all hardware interfaces are faked.
+# Core/dual transport plus AT32/RP2350/CH32 adapters; all hardware interfaces are faked.
 python3 tests/host/run.py --build-dir "${BUILD_ROOT}/host" \
     --at32-sdk-dir "${AFFINE_AT32_SDK_DIR}" --pico-sdk-dir "${PICO_SDK_PATH}"

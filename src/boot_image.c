@@ -4,6 +4,9 @@
 
 #include "boot_platform.h"
 #include "boot_protocol.h"
+#if defined(AFFINE_BOOT_CH32V203)
+#include "targets/ch32v203/app_entry.h"
+#endif
 
 /* Metadata sizes of the layouts that kept the security state right behind the
  * record (rounded up to the write unit), from board identity binding on. */
@@ -87,6 +90,7 @@ void boot_security_state_prepare(const boot_target_config_t *cfg,
     boot_security_state_update_crc(state);
 }
 
+#if !defined(AFFINE_BOOT_CH32V203)
 static bool boot_address_in_sram(const boot_target_config_t *cfg, uint32_t addr)
 {
     const uint32_t sram_end = cfg->sram_base + cfg->sram_size;
@@ -99,8 +103,15 @@ static bool boot_address_in_app_slot(const boot_target_config_t *cfg, uint32_t a
            ((addr - cfg->app_base) < cfg->app_size);
 }
 
+#endif
+
 bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_base)
 {
+#if defined(AFFINE_BOOT_CH32V203)
+    uint32_t words[2];
+    return boot_flash_read(app_base, words, sizeof(words)) &&
+           boot_ch32_entry_prepare(cfg, app_base, words, NULL);
+#else
     uint32_t vt[2];
     uint32_t initial_sp;
     uint32_t reset_handler;
@@ -126,6 +137,7 @@ bool boot_image_vector_is_valid(const boot_target_config_t *cfg, uint32_t app_ba
     }
 
     return boot_address_in_app_slot(cfg, reset_handler_addr);
+#endif
 }
 
 bool boot_metadata_is_valid(const boot_target_config_t *cfg, const boot_metadata_t *metadata)

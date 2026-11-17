@@ -75,6 +75,7 @@ target_include_directories(bootloader_stub
 
 target_link_libraries(bootloader_stub PRIVATE boot_core)
 
+option(AFFINE_BUILD_CH32V203 "Build CH32V203 C8 RISC-V bootloader" OFF)
 option(AFFINE_BUILD_AT32F405 "Build AT32F405 xC bootloader target" OFF)
 set(AFFINE_BOOT_AT32_USB "otgfs1" CACHE STRING "AT32F405 USB port: otgfs1 or otghs")
 set_property(CACHE AFFINE_BOOT_AT32_USB PROPERTY STRINGS otgfs1 otghs)
@@ -657,4 +658,67 @@ if(AFFINE_BUILD_AT32F405)
                 ${CMAKE_BINARY_DIR}/bootloader_at32f405.bin
             BYPRODUCTS ${CMAKE_BINARY_DIR}/bootloader_at32f405.bin)
     endif()
+endif()
+
+if(AFFINE_BUILD_CH32V203)
+    if(AFFINE_BUILD_STM32F072 OR AFFINE_BUILD_STM32G431 OR AFFINE_BUILD_STM32H503 OR AFFINE_BUILD_AT32F405)
+        message(FATAL_ERROR "Use a separate RISC-V build directory for CH32V203")
+    endif()
+    if(NOT AFFINE_BOOT_TRANSPORT STREQUAL "usb")
+        message(FATAL_ERROR "CH32V203 supports only USB")
+    endif()
+    set(AFFINE_BOOT_CH32_USB "usbd" CACHE STRING "CH32 USB peripheral: usbd or usbfs")
+    set_property(CACHE AFFINE_BOOT_CH32_USB PROPERTY STRINGS usbd usbfs)
+    if(NOT AFFINE_BOOT_CH32_USB MATCHES "^(usbd|usbfs)$")
+        message(FATAL_ERROR "AFFINE_BOOT_CH32_USB must be usbd or usbfs")
+    endif()
+    set(AFFINE_CH32_HSE_HZ "8000000" CACHE STRING "CH32 HSE crystal frequency (Hz)")
+    if(NOT AFFINE_CH32_HSE_HZ MATCHES "^[1-9][0-9]*$" OR AFFINE_CH32_HSE_HZ LESS 3000000 OR AFFINE_CH32_HSE_HZ GREATER 24000000)
+        message(FATAL_ERROR "AFFINE_CH32_HSE_HZ must be an integer between 3000000 and 24000000")
+    endif()
+    math(EXPR _ch32_mul "48000000 / ${AFFINE_CH32_HSE_HZ}")
+    math(EXPR _ch32_remainder "48000000 % ${AFFINE_CH32_HSE_HZ}")
+    if(NOT _ch32_remainder EQUAL 0 OR _ch32_mul LESS 2 OR _ch32_mul GREATER 16)
+        message(FATAL_ERROR "HSE must divide 48 MHz with a supported integer PLL multiplier 2..16")
+    endif()
+    set(CH32_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/ch32v203")
+    include(cmake/ch32-sdk.cmake)
+    add_executable(bootloader_ch32v203
+        src/boot_protocol.c src/boot_crypto.c src/boot_image.c src/boot_security.c src/bootloader.c
+        ${BOOT_TARGET_COMMON_SOURCES} ${CH32_SDK_SOURCES}
+        ${CH32_TARGET_DIR}/jump_prepare.c ${CH32_TARGET_DIR}/main.c ${CH32_TARGET_DIR}/platform.c ${CH32_TARGET_DIR}/flash.c
+        ${CH32_TARGET_DIR}/usb_detach.c ${CH32_TARGET_DIR}/runtime.c ${CH32_TARGET_DIR}/usb.c ${CH32_TARGET_DIR}/usb_irq.c
+        ${CH32_TARGET_DIR}/usb_${AFFINE_BOOT_CH32_USB}.c ${CH32_TARGET_DIR}/usb_descriptors.c)
+    set_source_files_properties(${CH32_SDK_SOURCES} PROPERTIES COMPILE_OPTIONS "-Wno-unused-parameter")
+    file(GLOB _ch32_target_sources CONFIGURE_DEPENDS "${CH32_TARGET_DIR}/*.c")
+    set_source_files_properties(${_ch32_target_sources} PROPERTIES COMPILE_OPTIONS "-Werror")
+    target_include_directories(bootloader_ch32v203 PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CH32_TARGET_DIR}" "${CH32_GENERATED}")
+    target_include_directories(bootloader_ch32v203 SYSTEM PRIVATE
+        "${CH32_SRC}/Peripheral/inc" "${CH32_SRC}/Core" "${CH32_USBD}/USB-Driver/inc")
+    if(AFFINE_BOOT_CH32_USB STREQUAL "usbfs")
+        set(_ch32_usbfs 1)
+    else()
+        set(_ch32_usbfs 0)
+    endif()
+    target_compile_definitions(bootloader_ch32v203 PRIVATE
+        CH32V20x_D6 AFFINE_BOOT_CH32V203=1 AFFINE_CH32_USBFS=${_ch32_usbfs}
+        HSE_VALUE=${AFFINE_CH32_HSE_HZ} AFFINE_CH32_PLL_MUL=RCC_PLLMul_${_ch32_mul})
+    set_property(TARGET bootloader_ch32v203 PROPERTY C_EXTENSIONS ON)
+    affine_apply_boot_policy(bootloader_ch32v203)
+    target_compile_options(bootloader_ch32v203 PRIVATE
+        -march=rv32imac_zicsr_zifencei -mabi=ilp32 -msmall-data-limit=0
+        -Os -flto -ffreestanding -fno-builtin -ffunction-sections -fdata-sections
+        -fno-unwind-tables -fno-asynchronous-unwind-tables -Wall -Wextra)
+    set_source_files_properties(${CH32_TARGET_DIR}/runtime.c PROPERTIES COMPILE_OPTIONS "-fno-lto;-Werror")
+    # Link rv32imc libgcc only; it is an ISA subset of the CH32. No libc.
+    target_link_options(bootloader_ch32v203 PRIVATE
+        -march=rv32imc -mabi=ilp32 -flto -nostdlib
+        -T${CH32_TARGET_DIR}/CH32V203C8_BOOTLOADER.ld -Wl,--gc-sections
+        -Wl,-Map=${CMAKE_BINARY_DIR}/bootloader_ch32v203.map)
+    target_link_libraries(bootloader_ch32v203 PRIVATE gcc)
+    add_custom_command(TARGET bootloader_ch32v203 POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:bootloader_ch32v203>
+            ${CMAKE_BINARY_DIR}/bootloader_ch32v203.bin)
 endif()

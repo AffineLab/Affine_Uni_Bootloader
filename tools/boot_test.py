@@ -92,6 +92,14 @@ DEFAULT_G431_BOOTLOADER_PID = 0x52B0
 DEFAULT_APP_PIDS = (0x52A5, 0x52A6)  # Mai controller role 1P / 2P
 
 TARGET_DEFAULTS = {
+    # Proposed CH32V203 C8 reference board, layout and USB identities.
+    0x43323033: {
+        "name": "ch32v203/reference",
+        "board_id": 0x43323052,
+        "flash_layout_id": 0x43323041,
+        "bootloader_pid": 0x52B5,
+        "write_align": 2,
+    },
     # Proposed RP2350 target, Pico 2 board, layout and USB identity. RP2354
     # builds report board 0x52333534; real flashes use the device's IDs.
     0x52323335: {
@@ -1162,6 +1170,17 @@ def target_default_bootloader_pid(target_id: int) -> int | None:
     return int(value) if value is not None else None
 
 
+def resolve_wait_bootloader_pid(port_name: str, vid: int | None, fallback: int) -> int:
+    """Without --target-id or --bootloader-pid, waits for the PID of the open port
+    when that is a known bootloader, not for G431's, so a reboot is found again."""
+    known = {int(entry["bootloader_pid"]) for entry in TARGET_DEFAULTS.values() if "bootloader_pid" in entry}
+    port_info = find_port_info(port_name)
+    port_pid = getattr(port_info, "pid", None)
+    if port_pid in known and (vid is None or getattr(port_info, "vid", None) == vid):
+        return int(port_pid)
+    return fallback
+
+
 def load_image_bytes(path: pathlib.Path, pad_byte: int, write_align: int) -> tuple[bytes, int]:
     if path.suffix.lower() != ".bin":
         raise ValueError("only .bin images are supported right now")
@@ -1736,7 +1755,8 @@ def main() -> int:
     parser.add_argument(
         "--bootloader-pid",
         type=parse_int_auto,
-        help="bootloader USB PID used for wait matching; defaults from --target-id or G431",
+        help="bootloader USB PID used for wait matching; defaults from --target-id, else from the "
+        "port when it is a known bootloader, else G431",
     )
     parser.add_argument(
         "--app-pid",
@@ -1763,6 +1783,7 @@ def main() -> int:
     if uart and args.app_jump:
         parser.error("--app-jump is the Mai application's USB command; over a UART reset the board or use --wait-hello")
 
+    bootloader_pid_guessed = args.bootloader_pid is None and args.target_id is None
     if args.bootloader_pid is None:
         args.bootloader_pid = target_default_bootloader_pid(args.target_id or 0) or DEFAULT_G431_BOOTLOADER_PID
 
@@ -1875,6 +1896,8 @@ def main() -> int:
     # A UART stays the same port across resets: nothing re-enumerates, so
     # there is nothing to wait for.
     device_serial = None if uart else resolve_wait_serial(args.port, args.usb_serial)
+    if bootloader_pid_guessed and not uart and not args.dry_run:
+        args.bootloader_pid = resolve_wait_bootloader_pid(args.port, args.usb_vid, args.bootloader_pid)
 
     if args.command == "flash" and args.app_jump:
         with open_serial_port(
