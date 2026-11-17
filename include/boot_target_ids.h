@@ -1,6 +1,11 @@
 #ifndef AFFINE_BOOT_TARGET_IDS_H
 #define AFFINE_BOOT_TARGET_IDS_H
 
+/* Proposed CH32V203 C8 target, board and layout; confirm before release. */
+#define BOOT_TARGET_ID_CH32V203 0x43323033UL /* C203 */
+#define BOOT_BOARD_ID_C203_REF 0x43323052UL /* C20R */
+#define BOOT_LAYOUT_ID_C203_A 0x43323041UL /* C20A */
+
 /* Proposed RP2350 target, Pico 2 / RP2354 board and 2 MiB layout identities. */
 #define BOOT_TARGET_ID_RP2350 0x52323335UL /* R235 */
 #define BOOT_BOARD_ID_R235_PICO2 0x52323350UL /* R23P */

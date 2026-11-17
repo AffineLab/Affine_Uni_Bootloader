@@ -92,6 +92,14 @@ DEFAULT_G431_BOOTLOADER_PID = 0x52B0
 DEFAULT_APP_PIDS = (0x52A5, 0x52A6)  # Mai controller role 1P / 2P
 
 TARGET_DEFAULTS = {
+    # Proposed CH32V203 C8 reference board, layout and USB identities.
+    0x43323033: {
+        "name": "ch32v203/reference",
+        "board_id": 0x43323052,
+        "flash_layout_id": 0x43323041,
+        "bootloader_pid": 0x52B5,
+        "write_align": 2,
+    },
     # Proposed RP2350 target, Pico 2 board, layout and USB identity. RP2354
     # builds report board 0x52333534; real flashes use the device's IDs.
     0x52323335: {
