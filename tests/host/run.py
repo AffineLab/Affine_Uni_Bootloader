@@ -68,6 +68,19 @@ def make_fixtures(fx: pathlib.Path) -> None:
         must([sys.executable, TOOL, "COM0", "flash", fx / "app.bin", "--dry-run", "--target-id", TARGET_ID,
               "--manifest-key", fx / "key.pem", "--manifest-key-id", "2", *extra, "--manifest-out", fx / f"{name}.manifest"])
 
+    # An odd-sized WCH-linked app proves FF is transmitted padding, not blank flash.
+    ch32_image = bytearray(rng.getrandbits(8) for _ in range(513))
+    ch32_image[:8] = struct.pack("<II", 0x1000006F, 0x00006000)
+    ch32_image[16:24] = bytes.fromhex("39e339e3ffffffff")
+    (fx / "ch32-odd.bin").write_bytes(ch32_image)
+    (fx / "ch32-app.bin").write_bytes(ch32_image + b"\xff")
+    for name, extra in (("signed", []), ("encrypted", ["--encrypted"])):
+        must([sys.executable, TOOL, "COM0", "flash", fx / "ch32-odd.bin", "--dry-run",
+              "--target-id", "0x43323033", "--manifest-key", fx / "key.pem", "--manifest-key-id", "2",
+              "--anti-rollback", "--security-version", "9",
+              "--manifest-nonce", "000102030405060708090A0B0C0D0E0F",
+              *extra, "--manifest-out", fx / f"ch32-{name}.manifest"])
+
 
 def build(cc: str, out: pathlib.Path, fx: pathlib.Path) -> dict[str, pathlib.Path]:
     exe = ".exe" if os.name == "nt" else ""
@@ -262,6 +275,51 @@ def main() -> int:
         (logs / "rp2350_usb_test.log").write_text(r.stdout + r.stderr)
         check("RP2350 CDC adapter (host USB fakes, TinyUSB headers only)",
               r.returncode == 0 and "ALL PASS" in r.stdout)
+
+    ch32_common = [args.cc, "-std=gnu11", "-D_GNU_SOURCE", "-O1", "-Wall", "-Wextra", "-Werror",
+                   f"-I{REPO}", f"-I{REPO / 'include'}", f"-I{HERE}",
+                   f"-I{HERE / 'ch32_stub'}", f"-I{REPO / 'targets/ch32v203'}"]
+    ch32_flash = out / ("ch32_flash_test.exe" if os.name == "nt" else "ch32_flash_test")
+    must([*ch32_common, f"-I{fx}", '-DAFFINE_BOOT_KEYS_OVERRIDE_HEADER="keys.h"', "-DAFFINE_BOOT_CH32V203=1", "-Wno-int-to-pointer-cast",
+          "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
+          HERE / "ch32_flash_test.c", REPO / "targets/ch32v203/flash.c",
+          REPO / "targets/ch32v203/jump_prepare.c", *CORE_SOURCES,
+          REPO / "targets/common/boot_target_common.c", "-o", ch32_flash])
+    r = run([ch32_flash, fx])
+    (logs / "ch32_flash_test.log").write_text(r.stdout + r.stderr)
+    check("CH32 flash, layout, RISC-V entry and jump cleanup (host fakes)",
+          r.returncode == 0 and "ALL PASS" in r.stdout)
+    ch32_usb = out / ("ch32_usb_test.exe" if os.name == "nt" else "ch32_usb_test")
+    must([*ch32_common, HERE / "ch32_usb_test.c", REPO / "targets/ch32v203/usb.c",
+          REPO / "targets/common/boot_target_common.c", "-o", ch32_usb])
+    r = run([ch32_usb])
+    (logs / "ch32_usb_test.log").write_text(r.stdout + r.stderr)
+    check("CH32 CDC adapter (host USB fakes)", r.returncode == 0 and "ALL PASS" in r.stdout)
+
+    ch32_detach = out / ("ch32_detach_test.exe" if os.name == "nt" else "ch32_detach_test")
+    must([*ch32_common, HERE / "ch32_detach_test.c", REPO / "targets/ch32v203/usb_detach.c",
+          "-o", ch32_detach])
+    r = run([ch32_detach])
+    (logs / "ch32_detach_test.log").write_text(r.stdout + r.stderr)
+    check("CH32 USBD/USBFS pull-ups and 50 ms detach (host register fakes)",
+          r.returncode == 0 and "ALL PASS" in r.stdout)
+
+    # Source fixtures exercise the guard; both real adapted files are checked in CI.
+    import runpy
+    startup_check = runpy.run_path(str(REPO / "tools/check_ch32.py"))["check_startup"]
+    good_startup = "handle_reset:\nli t0, 0x1888\ncsrw mstatus, t0\njal SystemInit\nmret\n"
+    startup_check(good_startup)
+    guard_ok = True
+    for bad in (good_startup.replace("0x1888", "0x88"),
+                good_startup.replace("0x1888", "0x8088"),
+                good_startup.replace("jal SystemInit\nmret", "mret\ncsrw mstatus, t0"),
+                good_startup.replace("mret", "nop")):
+        try:
+            startup_check(bad)
+        except ValueError:
+            continue
+        guard_ok = False
+    check("CH32 startup requires mstatus=0x1888 before mret (host fixtures)", guard_ok)
 
     r = run([bins["core_test"], fx], timeout=600)
     (logs / "core_test.log").write_text(r.stdout + r.stderr)

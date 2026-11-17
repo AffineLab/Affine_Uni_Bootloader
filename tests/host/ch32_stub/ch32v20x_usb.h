@@ -1,0 +1,5 @@
+#ifndef CH32_USB_HOST_STUB_H
+#define CH32_USB_HOST_STUB_H
+#define USBFS_UC_DEV_PU_EN 0x20U
+
+#endif
