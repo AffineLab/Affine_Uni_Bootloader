@@ -21,6 +21,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
             cmake \
             gcc \
             g++ \
@@ -33,6 +35,22 @@ jobs:
             python3 \
             python3-serial
 
+      - name: Install xPack RISC-V GCC 15.2.0-1 (release SHA-256)
+        run: |
+          version=15.2.0-1
+          archive="xpack-riscv-none-elf-gcc-${version}-linux-x64.tar.gz"
+          url="https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${version}"
+          mkdir -p "$RUNNER_TEMP/ch32-toolchain"
+          cd "$RUNNER_TEMP/ch32-toolchain"
+          curl --fail --location --retry 3 -O "${url}/${archive}"
+          curl --fail --location --retry 3 -O "${url}/${archive}.sha"
+          sha256sum --check "${archive}.sha"
+          tar -xzf "$archive"
+          echo "$PWD/xpack-riscv-none-elf-gcc-${version}/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch pinned WCH SDK
+        run: bash tools/fetch_ch32_sdk.sh build-ci/ch32-sdk
+
       - name: Fetch external Artery SDK (v2.1.5, pinned SHA)
         # 5dd9d55a2ce9ffa8fe0cb2652ac142920f2094a3; shallow fetch into the build directory.
         run: bash tools/fetch_at32_sdk.sh build-ci/at32-sdk
@@ -44,6 +62,7 @@ jobs:
 
       - name: Run CI checks
         env:
+          AFFINE_CH32_SDK_DIR: ${{ github.workspace }}/build-ci/ch32-sdk
           AFFINE_AT32_SDK_DIR: ${{ github.workspace }}/build-ci/at32-sdk
           PICO_SDK_PATH: ${{ github.workspace }}/build-ci/pico-sdk
           picotool_DIR: ${{ github.workspace }}/build-ci/picotool/install/picotool
@@ -59,6 +78,8 @@ jobs:
             build-ci/stm32g431/bootloader_stm32g431.bin
             build-ci/stm32f072/bootloader_stm32f072.bin
             build-ci/stm32h503/bootloader_stm32h503.bin
+            build-ci/ch32v203-usbd/bootloader_ch32v203.bin
+            build-ci/ch32v203-usbfs/bootloader_ch32v203.bin
             build-ci/at32f405-otgfs1/bootloader_at32f405.bin
             build-ci/at32f405-otghs/bootloader_at32f405.bin
             build-ci/rp2350-pico2/bootloader_rp2350.bin
@@ -83,6 +104,10 @@ jobs:
             build-ci/stm32f072/bootloader_stm32f072.map
             build-ci/stm32h503/bootloader_stm32h503.elf
             build-ci/stm32h503/bootloader_stm32h503.map
+            build-ci/ch32v203-usbd/bootloader_ch32v203.elf
+            build-ci/ch32v203-usbd/bootloader_ch32v203.map
+            build-ci/ch32v203-usbfs/bootloader_ch32v203.elf
+            build-ci/ch32v203-usbfs/bootloader_ch32v203.map
             build-ci/at32f405-otgfs1/bootloader_at32f405.elf
             build-ci/at32f405-otgfs1/bootloader_at32f405.map
             build-ci/at32f405-otghs/bootloader_at32f405.elf
